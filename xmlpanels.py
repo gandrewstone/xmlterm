@@ -46,6 +46,8 @@ DefaultStyle = wx.NO_BORDER
 
 DefaultBorderColor = (0,50,250)
 
+SelectedColor = wx.Colour(240,240,150)
+
 class XmlPanel(wx.Panel):
   """The base class for all panels that represent some XML document"""
   def __init__(self,parent,style=None):
@@ -59,6 +61,22 @@ class XmlPanel(wx.Panel):
     self.Bind(wx.EVT_CHAR, self.onCharEvent) 
     self.grabbable = False
     self.brush = None
+    self.selected = False
+
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    return None
+
+  def setSelected(self,state):
+    if self.selected != state:
+      if state:
+        self.brush = wx.Brush(SelectedColor,wx.SOLID)
+      else:
+        print "clear brush"
+        self.brush = None
+      self.selected = state
+      self.Refresh()
+      self.Update()
 
   def handOff(self,win,scrnPos):
     """Giving this child away -- by default let the parent deal with it"""
@@ -213,6 +231,10 @@ class ProcessPanel(XmlPanel):
     self.timer = wx.Timer(self)
     self.timer.Start(self.refreshInterval)
     self.execute()
+
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    return self.doc.simpleString()
 
   def handOff(self,win,scrnPos):
     """Giving this child away -- by default let the parent deal with it"""
@@ -467,6 +489,10 @@ class WidgetPanel(XmlPanel):
 
       self.grabbable = True
 
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    return self.doc.simpleString()
+
   def OnMouse(self,event):
     """Mouse control"""
 
@@ -608,6 +634,10 @@ class FancyText(XmlPanel):
     #  self.SetBackgroundColour(t)
     self.calcSize()
 
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    return self.getText()
+
   def OnPaint(self,evt):
     XmlPanel.OnPaint(self,evt)
     dc = wx.PaintDC(self)
@@ -670,7 +700,11 @@ class FancyText(XmlPanel):
     
     if self.foregroundColor:
       dc.SetTextForeground(wx.Colour(*self.foregroundColor))
-    if self.backgroundColor:
+    if self.selected:
+      print "text %s is selected" % self.getText()
+      dc.SetTextBackground(SelectedColor)
+      dc.SetBackground(wx.Brush(SelectedColor,wx.SOLID))
+    elif self.backgroundColor:
       dc.SetTextBackground(wx.Colour(*self.backgroundColor))
       dc.SetBackground(wx.Brush(wx.Colour(*self.backgroundColor),wx.SOLID))
       #dc.Clear()

@@ -147,7 +147,6 @@ class XmlResolver:
 
   def getWindow(x,y):
     for w in self.windows:
-      pdb.set_trace()
       winRect = w.GetRect()
 
 
@@ -214,7 +213,7 @@ class XmlResolver:
     if tree.tag[0] == "{": 
       namespace, tag = tree.tag[1:].split("}")
       lookupDict = lookupDict.get(namespace,lookupDict) # Replace the dictionary with the namespace-specific one, if such a dictionary is installed
-    handler = lookupDict.get(tag, defaultHandler)
+    handler = lookupDict.get(tag, self.defaultHandler)
     handler(tree,self)
 
   
@@ -259,7 +258,7 @@ class MyFileDropTarget(wx.FileDropTarget):
 
 class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
-  def __init__(self, parent,doc,resolver,completion):
+  def __init__(self, parent,doc,resolver,completion,execute):
     #scrolled.ScrolledPanel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER)
     wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
     #wx.ScrolledWindow.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
@@ -267,18 +266,24 @@ class XmlTerm(wx.Panel):
     self.windowMoverMode = False # Am I highlighting the child panels so they can be grabbed?
     self.resolver = resolver
     self.completion = completion
+    self.executeCmd = execute
+    self.size = self.GetClientSize()
 
     self.vscroll = wx.ScrollBar(self,style=wx.SB_VERTICAL)
     self.vstart = (0,0) # self.GetViewStart()
     self.vfrac = 1.0  # where am I in the document, fraction from 0 to 1 (scrollbar)
+    self.vscroll.SetSize((20,self.size[1]))
+    self.vscroll.SetPosition((self.size[0]-20,0))
+    self.scrollBarGrabSize = 20
 
     self.resolver.parentWin = self
     self.doc = Document(resolver)
     self.doc.append(doc)
     self.doc.layout()
+    self.selection = None  # did the user select a portion of the document?
     self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), completion)
     self.resolver.permanentWindows = [self.cmdLine]
-    self.aliases = { 'ls':'ls -C'}
+    self.aliases = {} # { 'ls':'ls -C'}
     try:
       f = open("frowny.svg","r")
       self.aliases[':-('] = "echo <widget><display>" + f.read() + "</display></widget>"
@@ -295,6 +300,7 @@ class XmlTerm(wx.Panel):
     self.Bind(wx.EVT_SIZE, self.OnSize) 
     self.Bind(wx.EVT_MOUSE_EVENTS, self.OnMouse) 
     self.vscroll.Bind(wx.EVT_SCROLL, self.OnScroll)
+    self.Bind(wx.EVT_MOUSEWHEEL, self.OnMouseWheel)
 
     #self.dropTgt = XmlShellDropTarget(self)
     #self.frame.SetDropTarget(self.dropTgt)
@@ -304,21 +310,39 @@ class XmlTerm(wx.Panel):
     #self.virtualSize=(0,0)
     #self.SetScrollbars(1,1,1,1)  # ????
     #self.SetScrollRate(20,20)
-    self.size = self.GetClientSize()
     self.render()
 
-  def OnScroll(self,event):
-    # pdb.set_trace()
-    pos = event.GetPosition()
-    # self.calcStartPos()
-    self.vfrac = float(pos)/float(self.vscroll.GetSize()[1])
-    #print "On Scroll %f " % self.vfrac
+  def OnMouseWheel(self,event):
+    tic = float(event.GetWheelRotation())/float(event.GetWheelDelta())
+    self.vfrac -= (tic * .02)  # 50 ticks to fully scroll
+    if self.vfrac < 0: self.vfrac = 0.0
+    if self.vfrac > 1: self.vfrac = 1.0
+    # print "vfrac: ", self.vfrac
     self.render()
+ 
+  def OnScroll(self,event):
+    pos = event.GetPosition()
+    et = event.GetEventType()
+    if et in wx.EVT_SCROLL_THUMBRELEASE.evtType:  # the thumb release returns a bad position (its about 20 higher)  
+      print "released at ", pos
+    elif et in wx.EVT_SCROLL_ENDSCROLL.evtType: # the end scroll event returns a bad position (its about 20 higher)
+      print "released at ", pos
+    elif et in wx.EVT_SCROLLWIN_LINEUP.evtType:
+      pass
+    elif et in wx.EVT_SCROLLWIN_LINEDOWN.evtType:
+      pass
+    else:
+      pos = event.GetPosition()
+      # self.calcStartPos()
+      self.vfrac = float(pos)/float(self.vscroll.GetSize()[1]-self.scrollBarGrabSize)
+      print "On Scroll %f (%d) %d " % (self.vfrac, pos,event.GetEventType())
+      self.render()
 
   def calcStartPos(self,frac):
     renderSz = self.size[1] - self.cmdLine.GetSize()[1]  # because its not part of the doc and is always on the bottom
-    topy = int(frac * float(self.vsize[1]))
-    topy = min(topy, self.vsize[1]-renderSz)  # Maximum scroll is where bottom of doc hits bottom of win 
+    vScrollRange = max(0,self.vsize[1]-renderSz) # You can't scroll across the entire virtual size.  Scrolling ends when the BOTTOM of the screen is touching the BOTTOM of the virtual size
+    topy = int(frac * float(vScrollRange))
+    # topy = min(topy, self.vsize[1]-renderSz)  # Maximum scroll is where bottom of doc hits bottom of win 
     self.vstart = (self.vstart[0],topy )
 
   def calcDocSize(self):
@@ -332,8 +356,49 @@ class XmlTerm(wx.Panel):
     self.cmdLine.keyPressed(event)
 
   def OnMouse(self,event):
+    #pos = event.GetPositionTuple()  # can't use the position from the event because that is relative to window which may not be this window -- it may be an interior panel
+    pos = self.ScreenToClient(wx.GetMousePosition())
+    pos = (pos[0] + self.vstart[0], pos[1] + self.vstart[1])
+    if event.MiddleDown():
+      try:
+        wx.TheClipboard.Open()
+        wx.TheClipboard.UsePrimarySelection(True)
+        data = wx.TextDataObject()
+        ok = wx.TheClipboard.GetData(data)
+        if not ok:
+          wx.TheClipboard.UsePrimarySelection(False)
+          ok = wx.TheClipboard.GetData(data)
+        if ok:
+          text = data.GetText()
+          text = text.replace("\n",";") # I don't want returns in the command line
+          self.cmdLine.append(text)
+      finally:
+        wx.TheClipboard.Close()       
+
+      pass
     if event.LeftDown():
+      print "start selection"
+      #pdb.set_trace()
+      print pos
+      if self.selection:
+        self.selection.complete()
+        self.selection = None
+      self.selection = self.doc.startSelection(pos)
       event.Skip()
+    elif event.Dragging() and self.selection:
+      self.doc.continueSelection(pos,self.selection)
+      print "Dragging"
+    elif event.LeftUp() and self.selection:
+      print "selection complete"
+      if not wx.TheClipboard.IsOpened():
+        try:
+          wx.TheClipboard.Open()
+          wx.TheClipboard.UsePrimarySelection(True)
+          data = wx.TextDataObject()
+          data.SetText(self.selection.simpleString())
+          wx.TheClipboard.SetData(data)
+        finally:
+          wx.TheClipboard.Close()       
 
   def relayout(self,panelLst):
     """Called when a list of child panels have changed size"""
@@ -370,43 +435,11 @@ class XmlTerm(wx.Panel):
 
   def execute(self,textLine):
     """Execute a command line.  More properly part of XML Shell functionality"""
-    prompt = self.cmdLine.prompt()
+    prompt = self.cmdLine.getPrompt()
     cmdprompt = '<text fore="#0000B0">%s%s</text>' % (escape(prompt), escape(textLine))
     # print cmdprompt
     self.doc.append(cmdprompt)
-    cmdList = textLine.split(";")
-    while cmdList:
-      text = cmdList.pop(0) 
-      sp = text.split()
-      if sp:
-        alias = self.aliases.get(sp[0],None)
-        if alias: # Rewrite text with the alias and resplit
-          sp[0] = alias
-          text = " ".join(sp)
-          sp = text.split()
-
-        if sp[0]=="!time": # Show the time (for fun)
-          self.doc.append("<time/>")
-        elif sp[0] == '!echo':  # Display something on the terminal
-          self.doc.append(" ".join(sp[1:]))
-          if 0:
-           try:  # If its good XML append it, otherwise excape it and dump as text
-            rest = " ".join(sp[1:])
-            testtree = ET.fromstring(rest)
-            self.doc.append(rest)
-           except ET.ParseError:
-            self.doc.append(escape(rest))
-        elif sp[0] == '!name':  # Change the terminal's title
-          self.frame.SetTitle(sp[1])
-        elif sp[0] == 'export' or sp[0] == '!export':   # Set an environment variable in the shell
-          kv = " ".join(sp[1:]).split("=")
-          key = kv[0].strip()
-          val = kv[1].strip()
-          os.environ[key]=val
-        elif sp[0] == 'alias' or sp[0] == '!alias':  # Make one command become another
-          self.aliases[sp[1]] = " ".join(sp[2:])
-        else:
-          self.doc.append('<process exec="%s"/>' % " ".join(sp))         
+    self.executeCmd(textLine,self)
     
     self.doc.layout()
 #    self.calcDocSize()
@@ -422,8 +455,11 @@ class XmlTerm(wx.Panel):
       """Change the size of this window"""
       newsize = self.GetClientSize()
       if self.size != newsize:
-        self.render()
         self.size = newsize
+        self.vscroll.SetSize((20,self.size[1]))
+        self.vscroll.SetPosition((self.size[0]-20,0))
+        self.render()
+
         # print self.GetViewStart()
        
    
@@ -439,11 +475,9 @@ class XmlTerm(wx.Panel):
     self.doc.position(self.vstart,size)
 
     size = (size[0], size[1] - cmdHeight)
-    self.vscroll.SetSize((20,size[1]))
-    self.vscroll.SetPosition((size[0]-20,0))
     # self.vscroll.SetThumbPosition(int(float(size[1] * vstart[1])/self.vsize[1]))
-    barGrabSize = float(size[1]) * float(self.size[1])/float(self.vsize[1])
-    self.vscroll.SetScrollbar(int(float(size[1] * self.vstart[1])/self.vsize[1]),barGrabSize,size[1]+cmdHeight,True)
+    self.scrollBarGrabSize = float(size[1]) * float(self.size[1])/float(self.vsize[1])
+    self.vscroll.SetScrollbar(int(float(size[1] * self.vstart[1])/self.vsize[1]),self.scrollBarGrabSize,size[1]+cmdHeight,True)
     self.vscroll.Show(True)
 
     self.Update()
@@ -463,6 +497,41 @@ def completion(s):
   return ""
       
 
+def execution(textLine,xmlterm):
+    """Execute the passed string"""
+    cmdList = textLine.split(";")
+    while cmdList:
+      text = cmdList.pop(0) 
+      sp = text.split()
+      if sp:
+        alias = xmlterm.aliases.get(sp[0],None)
+        if alias: # Rewrite text with the alias and resplit
+          sp[0] = alias
+          text = " ".join(sp)
+          sp = text.split()
+
+        if sp[0]=="!time": # Show the time (for fun)
+          xmlterm.doc.append("<time/>")
+        elif sp[0] == '!echo':  # Display something on the terminal
+          xmlterm.doc.append(" ".join(sp[1:]))
+          if 0:
+           try:  # If its good XML append it, otherwise excape it and dump as text
+            rest = " ".join(sp[1:])
+            testtree = ET.fromstring(rest)
+            xmlterm.doc.append(rest)
+           except ET.ParseError:
+            xmlterm.doc.append(escape(rest))
+        elif sp[0] == '!name':  # Change the terminal's title
+          xmlterm.frame.SetTitle(sp[1])
+        elif sp[0] == 'export' or sp[0] == '!export':   # Set an environment variable in the shell
+          kv = " ".join(sp[1:]).split("=")
+          key = kv[0].strip()
+          val = kv[1].strip()
+          os.environ[key]=val
+        elif sp[0] == 'alias' or sp[0] == '!alias':  # Make one command become another
+          xmlterm.aliases[sp[1]] = " ".join(sp[2:])
+        else:
+          xmlterm.doc.append('<process exec="%s"/>' % " ".join(sp))  
 
 class MyMiniFrame(wx.MiniFrame):
     """When you pull a widget out of the main window, it is placed into this frame"""
@@ -533,7 +602,7 @@ class MyFrame(wx.Frame):
       return True
 
 
-class MyApp(wx.App):
+class App(wx.App):
     def __init__(self, panelFactory, redirect):
       self.panelFactory = panelFactory
       wx.App.__init__(self, redirect=redirect)
@@ -545,7 +614,17 @@ class MyApp(wx.App):
         
 app       = None
 
-
+def GetDefaultResolver():
+  resolver=XmlResolver()
+  resolver.tags["time"] = timeHandler
+  resolver.tags["img"] = imageHandler
+  resolver.tags["text"] = textHandler
+  resolver.tags["svg"] = svgHandler
+  resolver.tags["plot"] = plotHandler
+  resolver.tags["widget"] = widgetHandler
+  resolver.tags["process"] = processHandler
+  resolver.tags["list"] = listHandler
+  return resolver
 
 def Test():
   doc = ["<text size='100' fore='rgb(100,200,50)'>RICH TEXT TEST</text>",
@@ -589,7 +668,6 @@ def Test():
   </list>
   """
 ]
-
   main(doc)
 
 
@@ -609,7 +687,7 @@ def main(doc=None):
 
   if not doc:
     doc=[]
-  app = MyApp(lambda parent,doc=doc,resolver=resolver,completion=completion: XmlTerm(parent,doc,resolver,completion),redirect=False)
+  app = App(lambda parent,doc=doc,resolver=resolver,completion=completion,execute=execution: XmlTerm(parent,doc,resolver,completion,execute),redirect=False)
   app.MainLoop()
 
 
@@ -619,6 +697,7 @@ if __name__ == "__main__":
 
 # !echo <bdata length="10"><>><567890</bdata>
 # !echo <widget name="test"><display><svg width="100" height="100"><circle cx="30" cy="30" r="20" stroke="green" stroke-width="4" fill="red" /></svg></display></widget>
+# !echo <text size="80">TESTING</text>
 # !echo <widget name="test"><display><svg width="100" height="100"><circle cx="50" cy="50" r="40" stroke="blue" stroke-width="4" fill="yellow" /></svg></display></widget>
 
 # <svg width=\'100\' height=\'100\'><circle cx=\'50\' cy=\'50\' r=\'40\' stroke=\'green\' stroke-width=\'4\' fill=\'yellow\' /></svg>

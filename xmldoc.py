@@ -99,6 +99,42 @@ class DirtyXmlReadable():
       else:
         time.sleep(.1)  # read should block but if it does not spin loop
 
+class Selection:
+  def __init__(self, doc, startPos, idx, startPanel):
+    self.doc   = doc
+    self.startPos = startPos
+    self.start = (startPanel, idx)
+    self.end = (startPanel,idx)
+
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    ret  = []
+    if self.start[1] is not None:
+      i = self.start[1]
+      while i <= self.end[1]:  # Turn off anything that was selected
+        s = self.doc.doc[i].panel.simpleString()
+        if s: ret.append(s)
+        i+=1
+    return("\n".join(ret))
+
+  def complete(self):
+    if self.start[1] is not None:
+      i = self.start[1]
+      while i <= self.end[1]:  # Turn off anything that was selected
+        self.doc.doc[i].panel.setSelected(False)
+        i+=1
+
+  def endAt(self,panel,idx,pos):
+      i = idx+1 
+      while i <= self.end[1]:  # Turn off anything that was selected
+        self.doc.doc[i].panel.setSelected(False)
+        i+=1
+      i = self.end[1]
+      while i <= idx:  # Turn on any new selections
+        self.doc.doc[i].panel.setSelected(True)
+        i+=1
+      self.end=(panel,idx)
+
 class Document:
   def __init__(self,resolver,changeCallback=None):
     self.doc=[DocElem(None,None,(0,0),(0,0))]  # Starter element
@@ -109,6 +145,15 @@ class Document:
     self.pending=[]
     self.callOnChange=changeCallback  # When the document or children change, I will call this function
     self.widgets = {}       # a dictionary of name widgets, used for widget updates or replacement
+
+  def simpleString(self):
+    """Returns the context of this panel as a string with no markup"""
+    ret  = []
+    for d in self.doc:
+        if d.panel: 
+          s = d.panel.simpleString()
+          if s: ret.append(s)
+    return("\n".join(ret))
 
   def remove(self,win):
     """Remove this window from the document.  The data is left there so the window can be re-created if needed"""
@@ -122,7 +167,34 @@ class Document:
         if self.callOnChange: self.callOnChange()
         if doce.elem is not None and doce.elem.tag == "widget" and doce.elem.attrib.has_key("name"):
           del self.widgets[doce.elem.attrib["name"]]
-  
+
+  def getWindow(self,pos):
+    """Get the window that contains the passed position.  Returns (window, posInDoc, pointer offset in window) or (None,None,None)"""
+    count = -1
+    for doce in self.doc:  # TODO switch to binary search
+      count += 1
+      if pos[0] >= doce.pos[0] and pos[1] >= doce.pos[1]:
+        offset = (pos[0] - doce.pos[0], pos[1] - doce.pos[1])
+        if offset[0] <= doce.size[0] and offset[1] <= doce.size[1]:
+          return (doce.panel, count, offset)
+    return (None,None, None)
+        
+
+  def startSelection(self,pos):
+    """Start selecting at the passed position in the document.  Return an object that tracks what is selected"""
+    (panel, idx, offset) = self.getWindow(pos)
+    sel = Selection(self,pos,idx,panel)
+    if panel:
+      print "selected %d" % idx
+      panel.setSelected(True)
+    return sel
+
+  def continueSelection(self,pos,selection):
+    """continue selecting at the passed position in the document.  Update the passed selection object"""
+    (panel, idx, offset) = self.getWindow(pos)
+    if panel: selection.endAt(panel,idx, offset)
+
+
   def rediscoverSizes(self,panelLst):
     firstChange = 0
     i = -1
@@ -250,7 +322,8 @@ class Document:
           self.widgets[et.attrib["name"]] = doce
         self.doc.append(doce)
 
-    if win and self.callOnChange: self.callOnChange()  # Tell registrant that something changed in the document
+      if win and self.callOnChange: self.callOnChange()  # Tell registrant that something changed in the document
+    return
 
     
   def layout(self,pos=None):

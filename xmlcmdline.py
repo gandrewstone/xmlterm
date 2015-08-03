@@ -1,4 +1,4 @@
-import sys, time
+import sys, time,types
 import math
 import os
 import re
@@ -34,9 +34,19 @@ class CmdLine(wx.Panel):
     self.prompt = dirPrompt  #"XMLT> "
     self.SetFont(self.font)
     self.ENTRY_EXTRA = 8
-    self.history=[""]
-    self.historyPos=-1
 
+    try:
+      historyFile = open("xmlshellhistory.txt","r")
+      self.history = [ x.strip() for x in historyFile.readlines()]  # get rid of the \n
+      historyFile.close()
+    except IOError, e:
+      self.history=[]
+
+    self.history.append("")  
+    self.historyFile = open("xmlshellhistory.txt","a")
+
+    self.historyPos=-1
+    self.sizeAdjust=(-20,0)
     self.executeHandler = execute
     self.completionHandler = completion # Set this to install a command completion handler: def handler(editLine): return "completion"
 
@@ -55,7 +65,21 @@ class CmdLine(wx.Panel):
     # Bind to handle up/down arrow and enter
     self.entry.Bind(wx.EVT_KEY_DOWN, self.keyPressed)
 
+  def getPrompt(self):
+    """Returns the prompt"""
+    if type(self.prompt) is types.FunctionType:  return str(self.prompt())
+    return str(self.prompt)
+
+  def setPrompt(self,prompt):
+    """changes the prompt"""
+    self.prompt = prompt
+    t = self.getPrompt()
+    self.promptPanel.SetValue(t)
+    self.promptPanel.Refresh()
+    self.refresh()
+
   def append(self,text):
+    """Adds the passed string to the end of the command line"""
     self.entry.AppendText(text)
 
   def keyPressed(self,evt):
@@ -80,9 +104,10 @@ class CmdLine(wx.Panel):
       self.history[-1] = entry  # Overwrite the last history with what the user actually selected
       self.history.append("")  # Add a new empty line to the history
       self.entry.SetValue("");
+      self.historyFile.write(entry + "\n")
+      self.historyFile.flush()
       if self.executeHandler:
         self.executeHandler(entry)
-      # TODO process this command
     elif key==wx.WXK_UP:
       if self.historyPos==-1 or self.historyPos==len(self.history)-1: self.history[-1] = self.entry.GetValue()  # If he was on the current edit line and is moving away, then save the current edit line
       self.historyPos = self.historyPos - 1
@@ -139,7 +164,7 @@ class CmdLine(wx.Panel):
       self.entry.MoveXY(x,0)
 
     pSize = self.parentWin.GetClientSizeTuple()
- 
+    pSize = (pSize[0] + self.sizeAdjust[0], pSize[1] + self.sizeAdjust[1])
     entrySz = self.entry.GetSize()
     mySz = self.GetSize()
   
