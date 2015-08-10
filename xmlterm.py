@@ -47,7 +47,26 @@ from xmlpanels import *
 from xmlcmdline import *
 from xmldoc import *
 
+def indent(elem,depth=0):
+  if type(elem) in types.StringTypes:
+    elem = ET.fromstring(elem)
+  ret = ["  "*depth + "<" + elem.tag]
+  for a in elem.attrib.items():
+    ret.append(" " + a[0] + "=" + '"' + a[1] + '"')
+  ret.append(">")
+  if elem.text: ret.append(elem.text)
+  if len(elem):
+    ret.append("\n")
+    for c in elem:
+      ret.append(indent(c,depth+1))
+  if elem.tail: ret.append(elem.tail)
+  ret.append("</" + elem.tag + ">")
+  ret.append("\n")
+  return "".join(ret)
 
+def barGraphHandler(elem,resolver):
+  w=BarPanel(resolver.parentWin,elem)
+  resolver.add(w)
 
 def timeHandler(elem,resolver):
   """Create a representation of the 'time' XML tag"""
@@ -101,14 +120,14 @@ def plotHandler(elem, resolver):
 
 def widgetHandler(elem, resolver):
   """Create a graphical representation of the XML 'widget' tag.  A widget is a wrapper around a group of other entities that can be manipulated as a unit by the terminal"""
-  r = XmlResolver()
+  r = resolver.new()
   r.tags=resolver.tags # reference the main resolver dictionary in this subresolver
   w = WidgetPanel(resolver.parentWin, elem,r)
   resolver.add(w) 
 
 def processHandler(elem, resolver):
   """create a GUI for the 'process' tag.  This will actually execute the specified process and pipe input/output between this program and the process"""  
-  r = XmlResolver()
+  r = resolver.new()
   r.tags=resolver.tags # reference the main resolver dictionary in this subresolver
   w = ProcessPanel(resolver.parentWin, elem,r)
   resolver.add(w) 
@@ -149,61 +168,10 @@ class XmlResolver:
     for w in self.windows:
       winRect = w.GetRect()
 
+  def new(self):
+    """Factory: return another instance of this object"""
+    return XmlResolver()
 
-  def xxxforwardResizableLayout(self):
-    """Place the child windows appropriately within the parent window.  This layout moves from top to bottom and resized the parent to fit the children"""
-    curx = 0
-    cury = 0
-    for lst in [self.windows, self.permanentWindows]:
-      for w in lst:
-        w.MoveXY(curx, cury)
-        (x,y) = w.GetBestSizeTuple()
-        cury += y
-    self.parentWin.Fit()
-
-  def xxxforwardLayout(self):
-    """Place the child windows appropriately within the parent window.  This layout moves from top to bottom and resized the parent to fit the children"""
-    maxx = curx = 0
-    maxy = cury = 0
-    for lst in [self.windows, self.permanentWindows]:
-      for w in lst:
-        pos = w.GetPosition()
-        if pos.x != curx or pos.y != cury:
-          w.MoveXY(curx, cury)
-        (x,y) = w.GetBestSizeTuple()
-        maxx=max(maxx,x)
-        cury += y
-    return(maxx,cury)
-
-  def xxxfwdLayout(self):
-    """Place the child windows appropriately within the parent window"""
-    curx = 0
-    cury = pSize[1]
-    for lst in [self.permanentWindows,reversed(self.windows)]:
-      for w in lst:
-        if cury<0: # Its off the screen -- the top of the prior is off so this must also be off screen
-          w.Hide()
-        else:
-          w.Show()
-          (x,y) = w.GetBestSizeTuple()
-          cury -= y
-          w.MoveXY(curx, cury)
-
-
-  def xxxlayout(self):
-    """Place the child windows appropriately within the parent window"""
-    pSize = self.parentWin.GetClientSizeTuple()
-    curx = 0
-    cury = pSize[1]
-    for lst in [self.permanentWindows,reversed(self.windows)]:
-      for w in lst:
-        if cury<0: # Its off the screen -- the top of the prior is off so this must also be off screen
-          w.Hide()
-        else:
-          w.Show()
-          (x,y) = w.GetBestSizeTuple()
-          cury -= y
-          w.MoveXY(curx, cury)
 
   def resolve(self,tree):
     """Figure out the appropriate handler for this element, and call it"""
@@ -215,6 +183,61 @@ class XmlResolver:
       lookupDict = lookupDict.get(namespace,lookupDict) # Replace the dictionary with the namespace-specific one, if such a dictionary is installed
     handler = lookupDict.get(tag, self.defaultHandler)
     handler(tree,self)
+
+  def prompt(self):
+    return os.environ.get("PWD","") + ">"
+
+  def completion(self,s):
+    if not s:
+      return ""
+    cmds=["!time ", "!exit", "exit", "!echo ", "export ","!export ", "alias ", "!alias ", "!name" ]
+    for c in cmds:
+      if c.startswith(s):
+        # print "complete", c
+        return c[len(s):]
+    return ""
+
+
+  def execute(self,textLine,xmlterm):
+    """Execute the passed string"""
+    cmdList = textLine.split(";")
+    while cmdList:
+      text = cmdList.pop(0) 
+      sp = text.split()
+      if sp:
+        alias = xmlterm.aliases.get(sp[0],None)
+        if alias: # Rewrite text with the alias and resplit
+          sp[0] = alias
+          text = " ".join(sp)
+          sp = text.split()
+
+        if sp[0]=="!time": # Show the time (for fun)
+          xmlterm.doc.append("<time/>")
+        elif sp[0] == '!exit' or sp[0] == 'exit':  # goodbye
+          self.parentWin.frame.Close()
+        elif sp[0] == '!echo':  # Display something on the terminal
+          xmlterm.doc.append(" ".join(sp[1:]))
+          if 0:
+           try:  # If its good XML append it, otherwise escape it and dump as text
+            rest = " ".join(sp[1:])
+            testtree = ET.fromstring(rest)
+            xmlterm.doc.append(rest)
+           except ET.ParseError:
+            xmlterm.doc.append(escape(rest))
+        elif sp[0] == '!name':  # Change the terminal's title
+          xmlterm.frame.SetTitle(sp[1])
+        elif sp[0] == 'export' or sp[0] == '!export':   # Set an environment variable in the shell
+          kv = " ".join(sp[1:]).split("=")
+          if len(kv) == 2:
+            key = kv[0].strip()
+            val = kv[1].strip()
+            os.environ[key]=val
+          else:
+            xmlterm.doc.append("usage: !export NAME=VALUE")
+        elif sp[0] == 'alias' or sp[0] == '!alias':  # Make one command become another
+          xmlterm.aliases[sp[1]] = " ".join(sp[2:])
+        else:
+          xmlterm.doc.append('<process exec="%s"/>' % " ".join(sp))  
 
   
 
@@ -258,15 +281,15 @@ class MyFileDropTarget(wx.FileDropTarget):
 
 class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
-  def __init__(self, parent,doc,resolver,completion,execute):
+  def __init__(self, parent,doc,termController):
     #scrolled.ScrolledPanel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER)
     wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
     #wx.ScrolledWindow.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
     self.frame = parent
     self.windowMoverMode = False # Am I highlighting the child panels so they can be grabbed?
-    self.resolver = resolver
-    self.completion = completion
-    self.executeCmd = execute
+    self.resolver = termController
+    self.completion = termController
+    self.executeCmd = termController
     self.size = self.GetClientSize()
 
     self.vscroll = wx.ScrollBar(self,style=wx.SB_VERTICAL)
@@ -277,11 +300,11 @@ class XmlTerm(wx.Panel):
     self.scrollBarGrabSize = 20
 
     self.resolver.parentWin = self
-    self.doc = Document(resolver)
+    self.doc = Document(self.resolver)
     self.doc.append(doc)
     self.doc.layout()
     self.selection = None  # did the user select a portion of the document?
-    self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), completion)
+    self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), self.completion)
     self.resolver.permanentWindows = [self.cmdLine]
     self.aliases = {} # { 'ls':'ls -C'}
     try:
@@ -321,6 +344,7 @@ class XmlTerm(wx.Panel):
     self.render()
  
   def OnScroll(self,event):
+    print "scroll"
     pos = event.GetPosition()
     et = event.GetEventType()
     if et in wx.EVT_SCROLL_THUMBRELEASE.evtType:  # the thumb release returns a bad position (its about 20 higher)  
@@ -353,7 +377,17 @@ class XmlTerm(wx.Panel):
 
 
   def onCharEvent(self, event):  # If someone passes a key event to me give it to the command line
-    self.cmdLine.keyPressed(event)
+    if key=="c" or key == "C" and evt.ControlDown():  # COPY
+      if not wx.TheClipboard.IsOpened():
+        try:
+          wx.TheClipboard.Open()
+          data = wx.TextDataObject()
+          data.SetText(self.selection.simpleString())
+          wx.TheClipboard.SetData(data)
+        finally:
+          wx.TheClipboard.Close()       
+    else:
+      self.cmdLine.keyPressed(event)
 
   def OnMouse(self,event):
     #pos = event.GetPositionTuple()  # can't use the position from the event because that is relative to window which may not be this window -- it may be an interior panel
@@ -439,7 +473,7 @@ class XmlTerm(wx.Panel):
     cmdprompt = '<text fore="#0000B0">%s%s</text>' % (escape(prompt), escape(textLine))
     # print cmdprompt
     self.doc.append(cmdprompt)
-    self.executeCmd(textLine,self)
+    self.executeCmd.execute(textLine,self)
     
     self.doc.layout()
 #    self.calcDocSize()
@@ -465,6 +499,7 @@ class XmlTerm(wx.Panel):
    
   def render(self):
     """Place the child panels appropriately in this panel"""
+    print "render"
     cmdHeight = self.cmdLine.GetSize()[1]
     size = self.GetClientSize()
     self.calcDocSize()    
@@ -486,52 +521,6 @@ class XmlTerm(wx.Panel):
     self.cmdLine.MoveXY(0,self.size[1]-cmdHeight)
     self.cmdLine.Update()
 
-def completion(s):
-  if not s:
-    return ""
-  cmds=["!time ", "!echo ", "export ","!export ", "alias ", "!alias ", "!name" ]
-  for c in cmds:
-    if c.startswith(s):
-      print "complete", c
-      return c[len(s):]
-  return ""
-      
-
-def execution(textLine,xmlterm):
-    """Execute the passed string"""
-    cmdList = textLine.split(";")
-    while cmdList:
-      text = cmdList.pop(0) 
-      sp = text.split()
-      if sp:
-        alias = xmlterm.aliases.get(sp[0],None)
-        if alias: # Rewrite text with the alias and resplit
-          sp[0] = alias
-          text = " ".join(sp)
-          sp = text.split()
-
-        if sp[0]=="!time": # Show the time (for fun)
-          xmlterm.doc.append("<time/>")
-        elif sp[0] == '!echo':  # Display something on the terminal
-          xmlterm.doc.append(" ".join(sp[1:]))
-          if 0:
-           try:  # If its good XML append it, otherwise excape it and dump as text
-            rest = " ".join(sp[1:])
-            testtree = ET.fromstring(rest)
-            xmlterm.doc.append(rest)
-           except ET.ParseError:
-            xmlterm.doc.append(escape(rest))
-        elif sp[0] == '!name':  # Change the terminal's title
-          xmlterm.frame.SetTitle(sp[1])
-        elif sp[0] == 'export' or sp[0] == '!export':   # Set an environment variable in the shell
-          kv = " ".join(sp[1:]).split("=")
-          key = kv[0].strip()
-          val = kv[1].strip()
-          os.environ[key]=val
-        elif sp[0] == 'alias' or sp[0] == '!alias':  # Make one command become another
-          xmlterm.aliases[sp[1]] = " ".join(sp[2:])
-        else:
-          xmlterm.doc.append('<process exec="%s"/>' % " ".join(sp))  
 
 class MyMiniFrame(wx.MiniFrame):
     """When you pull a widget out of the main window, it is placed into this frame"""
@@ -614,19 +603,24 @@ class App(wx.App):
         
 app       = None
 
-def GetDefaultResolver():
-  resolver=XmlResolver()
-  resolver.tags["time"] = timeHandler
-  resolver.tags["img"] = imageHandler
-  resolver.tags["text"] = textHandler
-  resolver.tags["svg"] = svgHandler
-  resolver.tags["plot"] = plotHandler
-  resolver.tags["widget"] = widgetHandler
-  resolver.tags["process"] = processHandler
-  resolver.tags["list"] = listHandler
+def GetDefaultResolverMapping():
+  resolver={}
+  resolver["time"] = timeHandler
+  resolver["img"] = imageHandler
+  resolver["text"] = textHandler
+  resolver["svg"] = svgHandler
+  resolver["plot"] = plotHandler
+  resolver["barGraph"] = barGraphHandler
+  resolver["widget"] = widgetHandler
+  resolver["process"] = processHandler
+  resolver["list"] = listHandler
   return resolver
 
 def Test():
+  # pdb.set_trace()
+  foo = """<a>test<b>b</b><c k1="z" k2="y">cval</c></a>"""
+  print indent(foo)
+
   doc = ["<text size='100' fore='rgb(100,200,50)'>RICH TEXT TEST</text>",
   "<text size='50' fore='#FF40D0'>purple</text>",
   "<text size='25' fore='red'>red</text>",
@@ -666,6 +660,21 @@ def Test():
 
     </data>
   </list>
+  """,
+  """<barGraph title="test" xlabel="bottom label" ylabel="vertical label">
+     <a>30</a>
+     <b label='labelB'>20</b>
+     <c label='C'>10</c>
+     <d label='D'>5</d>
+     <a1>30</a1>
+     <b1>20</b1>
+     <c1>10</c1>
+     <d1>5</d1>
+     <a2>30</a2>
+     <b2>20</b2>
+     <c2>10</c2>
+     <d2>5</d2>
+     </barGraph>
   """
 ]
   main(doc)
@@ -675,19 +684,11 @@ def main(doc=None):
   global app
   os.environ["TERM"] = "XT1" # Set the term in the environment so child programs know xmlterm is running
   resolver=XmlResolver()
-  resolver.tags["time"] = timeHandler
-  resolver.tags["img"] = imageHandler
-  resolver.tags["text"] = textHandler
-  resolver.tags["svg"] = svgHandler
-  resolver.tags["plot"] = plotHandler
-  resolver.tags["widget"] = widgetHandler
-  resolver.tags["process"] = processHandler
-  resolver.tags["list"] = listHandler
-  # resolver.tags["process"] = processHandler
+  resolver.tags= GetDefaultResolverMapping()
 
   if not doc:
     doc=[]
-  app = App(lambda parent,doc=doc,resolver=resolver,completion=completion,execute=execution: XmlTerm(parent,doc,resolver,completion,execute),redirect=False)
+  app = App(lambda parent,doc=doc,resolver=resolver: XmlTerm(parent,doc,resolver),redirect=False)
   app.MainLoop()
 
 

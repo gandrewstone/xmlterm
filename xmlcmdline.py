@@ -22,16 +22,13 @@ import wx.aui
 
 from xmlpanels import *
 
-dirPrompt = lambda: os.environ.get("PWD","") + ">"
 
 class CmdLine(wx.Panel):
   """Handle command line entry.  Includes history and command completion"""
   def __init__(self, parent,execute=None,completion=None):
     wx.Panel.__init__(self, parent, style = wx.NO_BORDER)
     self.parentWin = parent
-    #self.prompt = wx.StaticText(self,-1,"sp> ")
     self.font = wx.Font(16, wx.SWISS, wx.NORMAL, wx.NORMAL, False,'MS Shell Dlg 2')
-    self.prompt = dirPrompt  #"XMLT> "
     self.SetFont(self.font)
     self.ENTRY_EXTRA = 8
 
@@ -50,7 +47,7 @@ class CmdLine(wx.Panel):
     self.executeHandler = execute
     self.completionHandler = completion # Set this to install a command completion handler: def handler(editLine): return "completion"
 
-    self.promptPanel = FancyText(self,self.prompt,fore=(0,0,255))
+    self.promptPanel = FancyText(self,self.completionHandler.prompt(),fore=(0,0,255))
 
     self.entry = wx.TextCtrl(self, -1, "",style = wx.NO_BORDER) # | wx.TE_MULTILINE)  # Only 1 line but text styles are only supported in the multiline widget in wxGTK
     self.entry.SetBackgroundColour(parent.GetBackgroundColour())
@@ -67,12 +64,10 @@ class CmdLine(wx.Panel):
 
   def getPrompt(self):
     """Returns the prompt"""
-    if type(self.prompt) is types.FunctionType:  return str(self.prompt())
-    return str(self.prompt)
+    return str(self.completionHandler.prompt())
 
-  def setPrompt(self,prompt):
+  def setPrompt(self):
     """changes the prompt"""
-    self.prompt = prompt
     t = self.getPrompt()
     self.promptPanel.SetValue(t)
     self.promptPanel.Refresh()
@@ -96,6 +91,7 @@ class CmdLine(wx.Panel):
       print "F1 KEY HIT"
       self.parentWin.windowMover()
     if key==wx.WXK_TAB:
+      print "TAB"
       self.entry.AppendText(self.completionPanel.GetValue())
       self.completionPanel.SetValue("")
       self.entry.SetInsertionPointEnd()      
@@ -106,6 +102,7 @@ class CmdLine(wx.Panel):
       self.entry.SetValue("");
       self.historyFile.write(entry + "\n")
       self.historyFile.flush()
+      self.historyPos=-1  # Back to bottom
       if self.executeHandler:
         self.executeHandler(entry)
     elif key==wx.WXK_UP:
@@ -143,16 +140,19 @@ class CmdLine(wx.Panel):
   def textEntryHandler(self,evt):
     value = self.entry.GetValue()
     if self.completionHandler:
-      completion = self.completionHandler(value)
-      self.completionPanel.SetValue(completion)
+      completion = self.completionHandler.completion(value)
+      if completion != self.completionPanel.text:
+        print "SET"
+        self.completionPanel.SetValue(completion)
     #print value
     (px,py) = self.promptPanel.GetBestSizeTuple()
     entryX,entryY = self.entry.GetTextExtent(value)
-    self.completionPanel.MoveXY(px+entryX+self.ENTRY_EXTRA,0)  # But drop the completion panel on top of it
+    self.completionPanel.move(px+entryX+self.ENTRY_EXTRA,0)  # But drop the completion panel on top of it
 
     #self.refresh()  # I need to move the windows around based on the changing content
 
   def refresh(self):
+    print "refresh"
     (x,py) = self.promptPanel.GetBestSizeTuple()
     entryX,entryY = self.entry.GetTextExtent(self.entry.GetValue())
     y = max(py,entryY)
@@ -169,10 +169,12 @@ class CmdLine(wx.Panel):
     mySz = self.GetSize()
   
     if entrySz.x != pSize[0]-x:
+      print "set sz 1"
       self.entry.SetSizeWH(pSize[0]-x,-1)  # Set the size of the text entry to the full width
       self.entry.SetFocus()  # This causes the command line to get the keyboard events whenever the LiveDoc is selected (otherwise you need to click on it explicitly)
-      self.completionPanel.MoveXY(x+entryX+self.ENTRY_EXTRA,0)  # But drop the completion panel on top of it
-    if mySz.x != pSize[0] or mySz.y != y:  
+      self.completionPanel.move(x+entryX+self.ENTRY_EXTRA,0)  # But drop the completion panel on top of it
+    if mySz.x != pSize[0] or mySz.y != y:
+      print "set sz 2"
       self.SetSizeWH(pSize[0],y)
     return y
    

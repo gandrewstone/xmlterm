@@ -1,4 +1,5 @@
-import sys, time, types
+from ast import literal_eval
+import sys, time, types, traceback
 import math
 import os
 import re
@@ -16,6 +17,7 @@ import xml.etree.ElementTree as ET
 
 import wx.lib.scrolledpanel as scrolled
 import wx.gizmos as gizmos
+import wx.lib.plot as plot
 import wx.richtext
 #import wx.lib.fancytext
 import wx
@@ -62,6 +64,13 @@ class XmlPanel(wx.Panel):
     self.grabbable = False
     self.brush = None
     self.selected = False
+    self.createdAt = traceback.extract_stack()[-3]
+
+  def move(self,x,y):
+    pos = self.GetPosition()
+    if pos[0] != x or pos[1] != y:
+      self.MoveXY(x,y)
+
 
   def simpleString(self):
     """Returns the context of this panel as a string with no markup"""
@@ -115,12 +124,19 @@ class XmlPanel(wx.Panel):
     self.Update()  
 
   def OnPaint(self,evt):
+    dc = wx.PaintDC(self)
+    self.paintXmlPanel(dc)
+
+  def paintXmlPanel(self,dc):
     """Repaint this panel.  Right now, this code just draws the border if it is on"""
+    #try:
+    #  print "panel [%s] text [%s]" % (str(self),str(self.createdAt))
+    #except:
+    #  pass
     if self.brush is None:
       # bkcol = self.parent.GetBackgroundColour()
       brush = wx.Brush(wx.Colour(0,0,0),wx.TRANSPARENT)
     else: brush = self.brush
-    dc = wx.PaintDC(self)
     sz = self.GetSize()
     oldb = dc.GetBrush()
     oldp = dc.GetPen()
@@ -133,27 +149,128 @@ class XmlPanel(wx.Panel):
     dc.SetBrush(brush)
     dc.DrawRectangle(0,0,sz[0]-1, sz[1]-1)  # TODO: make a prettier border
     dc.SetBrush(oldb)
-    dc.SetPen(oldp)
+    dc.SetPen(oldp)    
+
+someColors = ['MEDIUM FOREST GREEN', 'RED', 'GOLDENROD', 'SALMON', 'BLUE', 'GOLD', 'MEDIUM ORCHID', 'SEA GREEN', 'BLUE VIOLET', 'MEDIUM SEA GREEN', 'SIENNA', 'BROWN', 'GREY', 'MEDIUM SLATE BLUE', 'SKY BLUE', 'CADET BLUE', 'GREEN', 'MEDIUM SPRING GREEN', 'SLATE BLUE', 'CORAL', 'GREEN YELLOW', 'MEDIUM TURQUOISE', 'SPRING GREEN', 'CORNFLOWER BLUE', 'INDIAN RED', 'MEDIUM VIOLET RED', 'STEEL BLUE', 'CYAN', 'KHAKI', 'MIDNIGHT BLUE', 'TAN', 'DARK GREY', 'LIGHT BLUE', 'NAVY', 'THISTLE', 'DARK GREEN', 'LIGHT GREY', 'ORANGE', 'TURQUOISE', 'DARK OLIVE GREEN', 'LIGHT STEEL BLUE', 'ORANGE RED', 'VIOLET', 'DARK ORCHID', 'LIME GREEN', 'ORCHID', 'VIOLET RED', 'DARK SLATE BLUE', 'MAGENTA', 'PALE GREEN', 'WHEAT', 'DARK SLATE GREY', 'MAROON', 'PINK', 'WHITE', 'DARK TURQUOISE', 'MEDIUM AQUAMARINE', 'PLUM', 'YELLOW', 'DIM GREY', 'MEDIUM BLUE', 'PURPLE', 'YELLOW GREEN']
+
+class BarPanel(XmlPanel):
+  """Generate a bar graph using wx.lib.plot"""
+  def __init__(self, parent,elem):
+    XmlPanel.__init__(self, parent)
+    self.elem = elem
+    self.plot = plot.PlotCanvas(self)
+    self.sizer = wx.BoxSizer(wx.VERTICAL)
+    self.legendSize = 200
     
+    psize = self.parent.GetSize()
+    self.setSize(psize.x-30,psize.y/2)  # Start with the biggest possible size
+
+    self.render()
+    #self.sizer.Add(self.plot, 1, wx.LEFT | wx.TOP | wx.GROW)
+    #self.SetSizer(self.sizer)
+    #self.Fit()
+
+  def setSize(self,x,y):
+    sz = self.size = (x,y)
+    self.SetInitialSize(sz)
+    self.SetSize(sz)
+    self.plot.SetInitialSize(sz)
+    self.plot.SetSize(sz)
+    
+
+  def render(self):
+    self.plot.SetBackgroundColour(None)  # None is clear
+    self.plot.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
+    self.plot.SetFontSizeAxis(10)
+    self.plot.SetFontSizeLegend(7)
+    self.plot.setLogScale((False, False))
+    self.plot.SetXSpec('none')  # Turn off x axis grid
+    self.plot.SetYSpec('auto')
+    self.plot.SetEnableLegend(True)
+    self.plot.SetEnableGrid(True)
+    self.plot.SetEnableAntiAliasing(True)
+    self.plot.SetEnableHiRes(True)
+
+#        self.client.Redraw()
+    total = len(self.elem)
+    width = min(40,max(5,self.size[0]/total))
+
+    #totalSize = width*count
+    #if totalSize+self.legendSize < self.size[0]:
+    #  self.setSize(totalSize+self.legendSize, self.size[1])
+
+    count = 0
+    bars = []
+    for b in self.elem:
+      count+=1
+      legend = b.attrib.get("label",b.tag)
+      points = [(count, 0), (count, float(b.text))]
+      line = plot.PolyLine(points, colour=someColors[count], legend=legend, width=width)
+      bars.append(line)
+
+#    points1g = [(2, 0), (2, 4)]
+#    line1g = plot.PolyLine(points1g, colour=someColors[1], legend='Mar.', width=30)
+
+
+    title = self.elem.attrib.get("title", "")
+    xlabel = self.elem.attrib.get("xlabel","")
+    ylabel = self.elem.attrib.get("ylabel","")
+
+    pg = plot.PlotGraphics(bars,title,xlabel,ylabel)
+    self.plot.Draw(pg,xAxis=(0, count+1))
+    self.plot.Show(True)
+    pass
+
 
 class PlotPanel(XmlPanel):
   """Draw a plot (graph)"""
   def __init__(self, parent,elem):
     XmlPanel.__init__(self, parent)
-    self.parent = parent
+    self.border = True
+
     self.elem = elem
     self.figure = Figure()
-    self.plot   = FigureCanvas(self,-1,self.figure)
+    self.applySize()
+    self.plot   = FigureCanvas(self,-1,self.figure)  # FancyText(self,"hi") 
     self.sizer = wx.BoxSizer(wx.VERTICAL)
     self.sizer.Add(self.plot, 1, wx.LEFT | wx.TOP | wx.GROW)
     self.SetSizer(self.sizer)
     self.Fit()
     self.render()
+
+  def applySize(self):
+    size = self.elem.attrib.get("size",None)
+    if size:
+      psize = self.parent.GetSize()
+      try:
+        size = literal_eval(size)
+        size = (min(psize[0],size[0]), min(psize[1],size[1]))  # graph can't be bigger than the xmlterm
+        self.SetInitialSize(size)
+        self.SetSize(size)
+        dpi = self.figure.get_dpi()
+        self.figure.set_size_inches(float(size[0])/dpi,float(size[1])/dpi)
+        # self.plot.SetSize(size)
+        self.Fit()
+      except ValueError,e:  # size is malformed
+        print "bad size"
+        pass
+      return size
+    return None
+
   def render(self):
-    # Pull data out of the element
-    title = self.elem.attrib.get("title", None)
-    xlabel = self.elem.attrib.get("xlabel",None)
-    ylabel = self.elem.attrib.get("ylabel",None)
+    small = False
+    size = self.applySize()
+    if size and size[0]<=400:  # Small graph
+      small = True
+
+    title = None
+    xlabel = None
+    ylabel = None
+    if not small:
+      # Pull data out of the element
+      title = self.elem.attrib.get("title", None)
+      xlabel = self.elem.attrib.get("xlabel",None)
+      ylabel = self.elem.attrib.get("ylabel",None)
 
     self.SetBackgroundColour(self.parent.GetBackgroundColour())
     #    self.plot.SetBackgroundColour(self.parent.GetBackgroundColour())
@@ -174,14 +291,17 @@ class PlotPanel(XmlPanel):
         
     #ret1, = self.axes.plot([1,2,3,4,5,6,7,8],label="test_label")
     #ret2, = self.axes.plot([8,7,6,5,4,3,2,1],label="test2_label")
-    self.axes.legend()
+    if not small:
+      self.axes.legend()
 
     # Turn off axis lines and ticks of the big subplot
     #self.axes.spines['top'].set_color('none')
     #self.axes.spines['bottom'].set_color('none')
     #self.axes.spines['left'].set_color('none')
     #self.axes.spines['right'].set_color('none')
-    #self.axes.tick_params(labelcolor='w', top='off', bottom='off', left='off', right='off')
+    if small:
+      # self.axes.spines['left'].set_color('none')
+      self.axes.tick_params(labelcolor='none', top='off', bottom='off', left='off', right='off')
     if xlabel: self.axes.set_xlabel(xlabel)    
     if ylabel: self.axes.set_ylabel(ylabel)    
     if title: self.axes.set_title(title)
@@ -623,7 +743,6 @@ class FancyText(XmlPanel):
   def __init__(self, parent,text,fore=None,back=None,size=None):
     XmlPanel.__init__(self, parent) # ,style=wx.SIMPLE_BORDER)
     self.Bind(wx.EVT_PAINT, self.OnPaint)
-
     self.text = text
     self.foregroundColor = fore
     self.backgroundColor = back
@@ -639,8 +758,8 @@ class FancyText(XmlPanel):
     return self.getText()
 
   def OnPaint(self,evt):
-    XmlPanel.OnPaint(self,evt)
     dc = wx.PaintDC(self)
+    self.paintXmlPanel(dc)
     self.render(dc)
 
   def calcSize(self):
@@ -690,14 +809,9 @@ class FancyText(XmlPanel):
     self.text = text
     newt = self.getText()
     if newt != t:
-      dc = wx.ClientDC(self) # I need to prerender it to get the size
-      self.render(dc)
+      self.calcSize()
     
   def render(self,dc):
-    #font = wx.SystemSettings.GetFont(0)
-    #font.SetPixelSize(30)
-    #dc.SetFont(font)
-    
     if self.foregroundColor:
       dc.SetTextForeground(wx.Colour(*self.foregroundColor))
     if self.selected:
@@ -714,15 +828,8 @@ class FancyText(XmlPanel):
       dc.SetFont(font)
 
     text = self.getText()    
-    (width, height, descent, externalLeading) = dc.GetFullTextExtent(text)
-    sz = wx.Size(width,height)
-    self.SetInitialSize(sz)
-    self.SetSize(sz)  # Set the size of the text entry to the full width
-
-    # dc.Clear()
 
     dc.DrawText(text,0,0)
     sx = dc.MaxX()
     sy = dc.MaxY()
-    #print width, height+descent, sx, sy
-    self.SetInitialSize(wx.Size(sx,max(height, sy)))
+    #self.SetInitialSize(wx.Size(sx,max(height, sy)))  # You can't setSize within OnPaint or you'll get an infinite paint loop
