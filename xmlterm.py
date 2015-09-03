@@ -16,7 +16,7 @@
 # 10. In ProcessPanel and XmlShell, merge output text into one stream and then pick off XML tags when they appear complete
 #     try /bin/bash: cat smiley.svg
 #     XMLTerm> echo "<widget><display>"; cat smiley.svg; echo "</display></widget>"
-
+import traceback,sys,code
 import sys, time, types
 import math
 import os
@@ -42,14 +42,32 @@ import wx
 import wx.aui
 
 BorderStyle=wx.SIMPLE_BORDER #wx.NO_BORDER
+ErrorColor="#FF4040"
 
 from xmlpanels import *
 from xmlcmdline import *
 from xmldoc import *
 
+class CommandException(Exception):
+  pass
+
+class CommandBadArgException(Exception):
+  pass
+
+class ParsingContext:
+  """This object is passed around as XML entity tree is parsed.  You can use it to communicate state from outer or higher XML nodes to subsequent ones
+     The xpath of the current element is stored in .path as a list of parent tag names.
+  """
+  def __init__(self,path=None):
+    if not path: self.path = []
+    else: self.path = path
+
 def indent(elem,depth=0):
   if type(elem) in types.StringTypes:
-    elem = ET.fromstring(elem)
+    try:
+      elem = ET.fromstring(elem)
+    except ET.ParseError, e: # Its bad XML so just do something simple that breaks up lines
+      return elem.replace(">",">\n")
   ret = ["  "*depth + "<" + elem.tag]
   for a in elem.attrib.items():
     ret.append(" " + a[0] + "=" + '"' + a[1] + '"')
@@ -64,23 +82,23 @@ def indent(elem,depth=0):
   ret.append("\n")
   return "".join(ret)
 
-def barGraphHandler(elem,resolver):
+def barGraphHandler(elem,resolver,context):
   w=BarPanel(resolver.parentWin,elem)
   resolver.add(w)
 
-def timeHandler(elem,resolver):
+def timeHandler(elem,resolver,context):
   """Create a representation of the 'time' XML tag"""
   w=TimePanel(resolver.parentWin)
   resolver.add(w)
 
-def listHandler(elem,resolver):
+def listHandler(elem,resolver,context):
   """Create a representation of the 'list' XML tag"""
   w=ListPanel(resolver.parentWin,elem)
   resolver.add(w)
 
 ext2type = { ".bmp": wx.BITMAP_TYPE_BMP, ".gif": wx.BITMAP_TYPE_GIF, ".png":wx.BITMAP_TYPE_PNG, ".jpg":wx.BITMAP_TYPE_JPEG,".jpeg":wx.BITMAP_TYPE_JPEG}
 
-def imageHandler(elem,resolver):
+def imageHandler(elem,resolver,context):
   """Create a representation of the 'img' XML tag"""
   url =  elem.attrib.get('href',None)
   wxBmp = None
@@ -95,7 +113,7 @@ def imageHandler(elem,resolver):
   w = wx.StaticBitmap(resolver.parentWin, -1, wxBmp)
   resolver.add(w)
 
-def textHandler(elem,resolver):
+def textHandler(elem,resolver,context):
   """Create a graphical representation of the XML 'text' tag"""
   if elem.text:
     size = elem.attrib.get("size",None)
@@ -104,28 +122,28 @@ def textHandler(elem,resolver):
     if fore: fore = color.rgb(fore) # [ int(x) for x in fore.split(",")]
     back = elem.attrib.get("back",None)
     if back: back = color.rgb(back) # [ int(x) for x in back.split(",")]
-    w = FancyText(resolver.parentWin,elem.text,fore=fore, back=back,size=size)
+    w = FancyTextChunked(resolver.parentWin,elem.text,fore=fore, back=back,size=size,chunkSize=2048)
     resolver.add(w)
 
-def svgHandler(elem, resolver):
+def svgHandler(elem, resolver,context):
   """Create a graphical representation of the XML 'svg' tag"""
   # pdb.set_trace()
   w = SvgPanel(resolver.parentWin, elem)
   resolver.add(w) 
 
-def plotHandler(elem, resolver):
+def plotHandler(elem, resolver,context):
   """Create a graphical representation of the XML 'plot' tag"""
   w = PlotPanel(resolver.parentWin, elem)
   resolver.add(w) 
 
-def widgetHandler(elem, resolver):
+def widgetHandler(elem, resolver,context):
   """Create a graphical representation of the XML 'widget' tag.  A widget is a wrapper around a group of other entities that can be manipulated as a unit by the terminal"""
   r = resolver.new()
   r.tags=resolver.tags # reference the main resolver dictionary in this subresolver
   w = WidgetPanel(resolver.parentWin, elem,r)
   resolver.add(w) 
 
-def processHandler(elem, resolver):
+def processHandler(elem, resolver,context):
   """create a GUI for the 'process' tag.  This will actually execute the specified process and pipe input/output between this program and the process"""  
   r = resolver.new()
   r.tags=resolver.tags # reference the main resolver dictionary in this subresolver
@@ -133,27 +151,54 @@ def processHandler(elem, resolver):
   resolver.add(w) 
 
 
-def defaultHandler(elem,resolver):
+def defaultHandler(elem,resolver,context):
   """Handle normal text and any XML that does not have a handler"""
   if elem.text and elem.text.strip():
     w = wx.StaticText(resolver.parentWin,-1,elem.text)
     resolver.add(w) # ,0,wx.ALL | wx.EXPAND,0)
+
+  context.path.append(elem.tag)
   for child in elem:
-    resolver.resolve(child)
+    resolver.resolve(child,context)
     if child.tail and child.tail.strip():
       w = wx.StaticText(resolver.parentWin,-1,child.tail,style = wx.BORDER_NONE)
       resolver.add(w) # ,0,wx.ALL | wx.EXPAND,0)
-   
+  del context.path[-1]   
 
 class XmlResolver:
   """This class turns an XML ElementTree representation into GUI widgets"""
   def __init__(self):
     self.tags = {}
+    self.cmds = [] # list of classes used to resolve implicit commands
     self.sizer = None
     self.parentWin = None
     self.windows=[]
     self.permanentWindows=[]
     self.defaultHandler = defaultHandler
+    self.xmlterm = None
+
+  def bindCmd(self,cmds,lst):
+    """This function takes a nested dictionary which maps command to implementation function, and a list of user input tokens.  It attempts to bind the user input to a command in the dictionary and returns:
+    ((function, completion_function), [args],{kwargs}) if it succeeds or
+    (None, None, None) if there is no binding
+    """
+    idx = 0
+    out = cmds.get(lst[0],None)
+    if out is not None:
+      if type(out) is types.DictType:  # Recurse into the next level of keyword
+        ret = self.bindCmd(out,lst[1:])
+        return ret
+      else:
+        return (out,lst[1:],None)  # TODO keyword args
+    return (None, None,None)
+
+  def newContext(self):
+    t = os.environ.get("PWD","")
+    path = t.split("/")
+    return ParsingContext(path)
+
+  def start(self,xt):
+    self.xmlterm = xt
 
   def clear(self):
     for w in self.windows:
@@ -161,8 +206,12 @@ class XmlResolver:
     self.windows = []
 
   def add(self,window):
-    window.Fit()
-    self.windows.append(window)
+    if not type(window) is types.ListType:
+      window = [window]
+      
+    for w in window:
+      w.Fit()
+      self.windows.append(w)
 
   def getWindow(x,y):
     for w in self.windows:
@@ -173,7 +222,7 @@ class XmlResolver:
     return XmlResolver()
 
 
-  def resolve(self,tree):
+  def resolve(self,tree,context):
     """Figure out the appropriate handler for this element, and call it"""
     tag = tree.tag
     lookupDict = self.tags
@@ -182,7 +231,7 @@ class XmlResolver:
       namespace, tag = tree.tag[1:].split("}")
       lookupDict = lookupDict.get(namespace,lookupDict) # Replace the dictionary with the namespace-specific one, if such a dictionary is installed
     handler = lookupDict.get(tag, self.defaultHandler)
-    handler(tree,self)
+    handler(tree,self,context)
 
   def prompt(self):
     return os.environ.get("PWD","") + ">"
@@ -190,16 +239,19 @@ class XmlResolver:
   def completion(self,s):
     if not s:
       return ""
-    cmds=["!time ", "!exit", "exit", "!echo ", "export ","!export ", "alias ", "!alias ", "!name" ]
+    cmds=["!time ", "!exit", "exit", "!echo ", "export ","!export ", "alias ", "!alias ", "!name","!cd","cd" ]
     for c in cmds:
       if c.startswith(s):
         # print "complete", c
         return c[len(s):]
     return ""
 
+  def error(s):
+    return '<text fore="%s">%s</text>' % (ErrorColor,s)
 
   def execute(self,textLine,xmlterm):
     """Execute the passed string"""
+#   try:
     cmdList = textLine.split(";")
     while cmdList:
       text = cmdList.pop(0) 
@@ -210,11 +262,53 @@ class XmlResolver:
           sp[0] = alias
           text = " ".join(sp)
           sp = text.split()
+        self.executeOne(sp,xmlterm)
 
-        if sp[0]=="!time": # Show the time (for fun)
+  def executeOne(self,sp,xmlterm):
+        for cmdClass in self.cmds:
+          if hasattr(cmdClass,"commands"):
+            (fns,args,kwargs) = self.bindCmd(cmdClass.commands,sp)
+            if fns: 
+              (binding,completion) = fns
+              if binding:
+                if kwargs:
+                  output = binding(*args,**kwargs)
+                else:
+                  output = binding(*args)
+                if output is not None: # None means to continue looking for another command
+                  if output:  # Commands will return "" if they have no output
+                    xmlterm.doc.append(output)
+                  return
+          fn_name = "do_" + sp[0]
+          if hasattr(cmdClass,fn_name):
+            try:
+              print "executing:", str(cmdClass.__class__), fn_name
+              output = getattr(cmdClass,fn_name)(*sp[1:])
+              if output is not None:
+                if output:
+                  xmlterm.doc.append(output)
+                return
+            except TypeError, e:  # command had incorrect arguments or something
+              # TODO: print the command's help and try to hint at the problem
+              xmlterm.doc.append("<error>" + str(e) + "</error>")
+              return
+#            except Exception, e:
+#              xmlterm.doc.append("<error>" + str(e) + "</error>")
+#              return
+
+        if sp[0]=="cd" or sp[0]=="!cd":
+          cwd = os.environ.get("PWD")
+          cwd = os.path.abspath(os.path.join(sp[1]))
+          if os.path.isdir(cwd):
+            os.environ["PWD"]=cwd
+            xmlterm.cmdLine.setPrompt()  # Update the prompt
+            os.chdir(cwd)
+          else:
+            xmlterm.doc.append(self.error('No such directory [%s]' % cwd))
+        elif sp[0]=="!time": # Show the time (for fun)
           xmlterm.doc.append("<time/>")
         elif sp[0] == '!exit' or sp[0] == 'exit':  # goodbye
-          self.parentWin.frame.Close()
+          self.xmlterm.frame.Close()
         elif sp[0] == '!echo':  # Display something on the terminal
           xmlterm.doc.append(" ".join(sp[1:]))
           if 0:
@@ -237,7 +331,9 @@ class XmlResolver:
         elif sp[0] == 'alias' or sp[0] == '!alias':  # Make one command become another
           xmlterm.aliases[sp[1]] = " ".join(sp[2:])
         else:
-          xmlterm.doc.append('<process exec="%s"/>' % " ".join(sp))  
+          t = escape(" ".join(sp))
+          print t
+          xmlterm.doc.append('<process>%s</process>' % t)  
 
   
 
@@ -282,41 +378,46 @@ class MyFileDropTarget(wx.FileDropTarget):
 class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
   def __init__(self, parent,doc,termController):
-    #scrolled.ScrolledPanel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER)
     wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
-    #wx.ScrolledWindow.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(800,600))
-    self.frame = parent
-    self.windowMoverMode = False # Am I highlighting the child panels so they can be grabbed?
-    self.resolver = termController
-    self.completion = termController
-    self.executeCmd = termController
-    self.size = self.GetClientSize()
+
+    self.ScrollBarWidth = 20 #? Configuration: how wide should the scroll bar be
+    self.MouseWheelTicsPerScreen = 10.0 # How many mouse wheel motions to scroll by a full screen?
+
+    self.frame = parent #? pointer to the primary GUI frame
+    self.windowMoverMode = False #? Am I highlighting the child panels so they can be grabbed?
+    self.resolver = termController  #?  The resolver converts xml to panels
+    self.completion = termController #? Command line completion
+    self.executeCmd = termController #? Execute a command entered in the prompt
+
+
+    tmp = self.GetClientSize()
+    #self.SetClientSize(tmp)  #? Window's display size (minus scrollbar and prompt)
+    self.size = tmp
+    
+    self.docPanel = wx.Panel(self, style = wx.NO_BORDER)
+
+    self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), self.completion)  #? Text entry window
+    #cmdLinePos = self.cmdLine.GetPosition()
+
+    #tmp = (tmp[0] - self.ScrollBarWidth, cmdLinePos[1] - 2) # tmp[1] - cmdLineSize[1]*5)    
+    #self.docPanel.SetSize(tmp)
+    self.docPanel.SetPosition((0,0))
 
     self.vscroll = wx.ScrollBar(self,style=wx.SB_VERTICAL)
     self.vstart = (0,0) # self.GetViewStart()
+    self.vsize = (0,0)  # Full document size
     self.vfrac = 1.0  # where am I in the document, fraction from 0 to 1 (scrollbar)
-    self.vscroll.SetSize((20,self.size[1]))
-    self.vscroll.SetPosition((self.size[0]-20,0))
-    self.scrollBarGrabSize = 20
+    self.vscroll.SetSize((self.ScrollBarWidth,self.size[1]))
+    self.vscroll.SetPosition((self.size[0]-self.ScrollBarWidth,0))
+    self.scrollBarGrabSize = self.size[1]
 
-    self.resolver.parentWin = self
+    self.resolver.parentWin = self.docPanel
     self.doc = Document(self.resolver)
     self.doc.append(doc)
     self.doc.layout()
     self.selection = None  # did the user select a portion of the document?
-    self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), self.completion)
-    self.resolver.permanentWindows = [self.cmdLine]
+    # self.resolver.permanentWindows = [self.cmdLine]
     self.aliases = {} # { 'ls':'ls -C'}
-    try:
-      f = open("frowny.svg","r")
-      self.aliases[':-('] = "echo <widget><display>" + f.read() + "</display></widget>"
-    except:
-      pass  
-    try:
-      f = open("smiley.svg","r")
-      self.aliases[':-)'] = "echo <widget><display>" + f.read() + "</display></widget>"
-    except:
-      pass  
       
     # self.frame.handOff(FancyText(self.frame,"This is a test"))
 
@@ -324,6 +425,14 @@ class XmlTerm(wx.Panel):
     self.Bind(wx.EVT_MOUSE_EVENTS, self.OnMouse) 
     self.vscroll.Bind(wx.EVT_SCROLL, self.OnScroll)
     self.Bind(wx.EVT_MOUSEWHEEL, self.OnMouseWheel)
+
+    # Bind to handle up/down arrow and enter
+    self.Bind(wx.EVT_CHAR, self.cmdLine.keyReceiver)
+    self.docPanel.Bind(wx.EVT_CHAR, self.cmdLine.keyReceiver)
+
+#    self.docPanel.Bind(wx.EVT_SET_FOCUS,self.OnFocus)
+#    self.Bind(wx.EVT_KILL_FOCUS,self.OnFocus)
+
 
     #self.dropTgt = XmlShellDropTarget(self)
     #self.frame.SetDropTarget(self.dropTgt)
@@ -333,18 +442,27 @@ class XmlTerm(wx.Panel):
     #self.virtualSize=(0,0)
     #self.SetScrollbars(1,1,1,1)  # ????
     #self.SetScrollRate(20,20)
+    self.resolver.start(self)
     self.render()
+
+# Does not seem to transition focus
+#  def OnFocus(self,event):
+#    wx.PostEvent(self.cmdLine.entry,event)        
 
   def OnMouseWheel(self,event):
     tic = float(event.GetWheelRotation())/float(event.GetWheelDelta())
-    self.vfrac -= (tic * .02)  # 50 ticks to fully scroll
+    # How far should the wheel scroll per tic?
+    # Discover how many screens in the full document:
+    sindoc = float(self.vsize[1])/self.size[1]
+    fracPerTic = 1.0/(sindoc*self.MouseWheelTicsPerScreen)
+  
+    self.vfrac -= (tic * fracPerTic)  # 50 ticks to fully scroll
     if self.vfrac < 0: self.vfrac = 0.0
     if self.vfrac > 1: self.vfrac = 1.0
     # print "vfrac: ", self.vfrac
     self.render()
  
   def OnScroll(self,event):
-    print "scroll"
     pos = event.GetPosition()
     et = event.GetEventType()
     if et in wx.EVT_SCROLL_THUMBRELEASE.evtType:  # the thumb release returns a bad position (its about 20 higher)  
@@ -363,16 +481,19 @@ class XmlTerm(wx.Panel):
       self.render()
 
   def calcStartPos(self,frac):
-    renderSz = self.size[1] - self.cmdLine.GetSize()[1]  # because its not part of the doc and is always on the bottom
-    vScrollRange = max(0,self.vsize[1]-renderSz) # You can't scroll across the entire virtual size.  Scrolling ends when the BOTTOM of the screen is touching the BOTTOM of the virtual size
+    """Calculates the position in the document that corresponds to the top left of the screen"""
+    renderSz = self.docPanel.GetClientSize()
+    vScrollRange = max(0,self.vsize[1]-renderSz[1]) # You can't scroll across the entire virtual size.  Scrolling ends when the BOTTOM of the screen is touching the BOTTOM of the virtual size
     topy = int(frac * float(vScrollRange))
     # topy = min(topy, self.vsize[1]-renderSz)  # Maximum scroll is where bottom of doc hits bottom of win 
     self.vstart = (self.vstart[0],topy )
 
   def calcDocSize(self):
-    """Calculate size of the full document that the screen shows only a part of""" 
+    """? Calculate size of the full document that the screen may only show a part of.  
+       This is is the maximum of the window size and the document size
+    """ 
     docsize = self.doc.GetSize()
-    size = self.GetClientSize()
+    size = self.docPanel.GetClientSize()
     self.vsize = (max(docsize[0],size[0]),max(docsize[1],size[1]))
 
 
@@ -412,7 +533,6 @@ class XmlTerm(wx.Panel):
       pass
     if event.LeftDown():
       print "start selection"
-      #pdb.set_trace()
       print pos
       if self.selection:
         self.selection.complete()
@@ -438,7 +558,7 @@ class XmlTerm(wx.Panel):
     """Called when a list of child panels have changed size"""
     i = self.doc.rediscoverSizes(panelLst)
     self.doc.layout(i)
- 
+    print self.cmdLine.GetSize()
     self.render()
     
  
@@ -468,7 +588,8 @@ class XmlTerm(wx.Panel):
     self.Update()
 
   def execute(self,textLine):
-    """Execute a command line.  More properly part of XML Shell functionality"""
+   """Execute a command line.  More properly part of XML Shell functionality"""
+   try:
     prompt = self.cmdLine.getPrompt()
     cmdprompt = '<text fore="#0000B0">%s%s</text>' % (escape(prompt), escape(textLine))
     # print cmdprompt
@@ -480,7 +601,16 @@ class XmlTerm(wx.Panel):
 #    self.calcStartPos(1.0) # 0 is top 1 is bottom
     self.vfrac = 1.0 # after command is executed we drop to the bottom
     self.render()       
-
+   except:
+        type, value, tb = sys.exc_info()
+        traceback.print_exc()
+        last_frame = lambda tb=tb: last_frame(tb.tb_next) if tb.tb_next else tb
+        frame = last_frame().tb_frame
+        pdb.post_mortem()
+        raise
+        #ns = dict(frame.f_globals)
+        #ns.update(frame.f_locals)
+        #code.interact(local=ns)
 #  def downToBottom(self):   
 #    self.calcDocSize() 
 #    self.vstart = (0, max(0,self.vsize[1]-self.GetClientSize()[1]-self.cmdLine.GetSize()[1]))  # Go back to the bottom
@@ -499,10 +629,11 @@ class XmlTerm(wx.Panel):
    
   def render(self):
     """Place the child panels appropriately in this panel"""
-    print "render"
+    # print "render"
     cmdHeight = self.cmdLine.GetSize()[1]
     size = self.GetClientSize()
-    self.calcDocSize()    
+    self.calcDocSize()
+
     #if self.vstart[1] >= docsize[1] - size[1]: # Is the view start near the bottom
     #  self.doc.positionFromBottom((self.size[0],self.size[1]-height))
     #else:
@@ -516,10 +647,12 @@ class XmlTerm(wx.Panel):
     self.vscroll.Show(True)
 
     self.Update()
-    self.cmdLine.Raise()  # Cmd line draws on top of everything else
+    # does not work: self.cmdLine.Raise()  # Cmd line draws on top of everything else
     cmdHeight = self.cmdLine.refresh()
     self.cmdLine.MoveXY(0,self.size[1]-cmdHeight)
     self.cmdLine.Update()
+
+    self.docPanel.SetSize((size[0],self.size[1]-cmdHeight))
 
 
 class MyMiniFrame(wx.MiniFrame):
@@ -685,6 +818,18 @@ def main(doc=None):
   os.environ["TERM"] = "XT1" # Set the term in the environment so child programs know xmlterm is running
   resolver=XmlResolver()
   resolver.tags= GetDefaultResolverMapping()
+
+  aliases = {}
+  try:
+      f = open("frowny.svg","r")
+      aliases[':-('] = "echo <widget><display>" + f.read() + "</display></widget>"
+  except:
+      pass  
+  try:
+      f = open("smiley.svg","r")
+      aliases[':-)'] = "echo <widget><display>" + f.read() + "</display></widget>"
+  except:
+      pass  
 
   if not doc:
     doc=[]
