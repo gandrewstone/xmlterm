@@ -6,6 +6,9 @@ import threading
 import pdb
 import mainliner
 import wx
+import xmlpanels
+
+TextChunking = 4000
 
 class DocElem:
   """An element (one xml tag) in the document"""
@@ -145,6 +148,8 @@ class Document:
     self.pending=[]
     self.callOnChange=changeCallback  # When the document or children change, I will call this function
     self.widgets = {}       # a dictionary of name widgets, used for widget updates or replacement
+    self.pendingNonXmlData = []
+    self.lastPendingCleared = 0
 
   def simpleString(self):
     """Returns the context of this panel as a string with no markup"""
@@ -206,23 +211,47 @@ class Document:
     
     return firstChange-1
 
+
   def nonXML(self,data):
+
+    self.pendingNonXmlData.append(data)
+    now = time.time()
+    if self.lastPendingCleared < now - 0.25:
+      self.flush()
+    time.sleep(.05)  # Slow it down so other work can be done
+
+  def flush(self):
+    """Force a flush of any pending data.  Call this periodically for interactive documents"""
 
     def doit(data):
       end = self.doc[-1]
       newpanel = False
       # debugging: prints the ascii of everything read in: print [ord(x) for x in list(data)]
-      try: # Try to add the nonxml onto the end. if anything goes wrong (like panel does not have the API) then create a new one
-        end.panel.appendText(data)
-      except AttributeError, e:  
-        self.append(data)
-        newpanel = True
+      # try: # Try to add the nonxml onto the end. if anything goes wrong (like panel does not have the API) then create a new one
+      pnl = end.panel
+      if isinstance(pnl,xmlpanels.FancyText):
+          if len(pnl.text)>TextChunking:
+            pos = data.find("\n")
+            if pos != -1:
+              pnl.appendText(data[0:pos])
+              end.size = pnl.calcSize()
+              self.lastLaid = len(self.doc)-2 # before the end panel that I just changed
+              self.append(data[pos+1:])  # +1 because we want to skip the \n because the chunk will do so itself
+              data = "" 
+          end.panel.appendText(data)
+      else:
+          self.append(data)
+          newpanel = True
       if not newpanel:
         end.size = end.panel.calcSize()
         self.lastLaid = len(self.doc)-2 # before the end panel that I just changed
       if self.callOnChange: self.callOnChange()
- 
-    wx.PostEvent(self.resolver.parentWin,mainliner.ExecuteEvent(lambda d=data:doit(d)))
+
+    if self.pendingNonXmlData:
+      wx.PostEvent(self.resolver.parentWin,mainliner.ExecuteEvent(lambda d="".join(self.pendingNonXmlData):doit(d)))
+      self.pendingNonXmlData = []
+      self.lastPendingCleared = time.time()
+      
 
   def feedProcessor(self,fd):
     """This runs in a separate thread so NO GUI calls!"""
@@ -278,6 +307,7 @@ class Document:
   def GetSize(self):
     """Returns the size in pixels of this document"""
     doce = self.doc[-1]
+    # Exception here?  Some prior exception caused a partial window insertion
     return (doce.pos[0]+doce.size[0],doce.pos[1]+doce.size[1])
 
   def startFeed(self,fd):
@@ -287,7 +317,9 @@ class Document:
     self.feedThread.start()
 
 
-  def append(self,doc):
+  def append(self,doc,context=None):
+    if context is None:
+      context = self.resolver.newContext()
     if type(doc) == types.ListType:
       for d in doc: self.append(d)
       return
@@ -299,7 +331,7 @@ class Document:
     else: # Its already an ET element
       et = doc
     self.resolver.windows=[]
-    self.resolver.resolve(et)
+    self.resolver.resolve(et,context)
     # assert(len(self.resolver.windows)==1)
     for win in self.resolver.windows:
       sz = win.GetBestSizeTuple()

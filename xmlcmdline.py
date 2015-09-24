@@ -77,9 +77,23 @@ class CmdLine(wx.Panel):
     """Adds the passed string to the end of the command line"""
     self.entry.AppendText(text)
 
-  def keyPressed(self,evt):
+  def keyReceiver(self,evt):
+    """Receive a key pressed in another window but really for this window"""
+    if not self.keyPressed(evt,pss=False):
+      print "sending event to text ctrl"
+      #self.entry.SetFocus()
+      self.entry.EmulateKeyPress(evt)
+      #wx.PostEvent(self.entry,evt)
+      #key = evt.GetUniChar()
+      #if key==wx.WXK_BACK:
+      #  self.entry.SetValue(self.entry.GetValue()[0:-1])
+      #else: 
+      #  key = chr(key)
+      #  self.append(key)
+
+  def keyPressed(self,evt,pss=True):
     key = evt.GetKeyCode()
-    if key=="v" or key == "V" and evt.ControlDown():  # PASTE
+    if key == ord("V") and evt.ControlDown():  # PASTE
       if not wx.TheClipboard.IsOpened():
        wx.TheClipboard.Open()
        # success = wx.TheClipboard.IsSupported(wx.DataFormat(wx.DF_BITMAP))
@@ -88,10 +102,8 @@ class CmdLine(wx.Panel):
        if clipText:
          self.entry.AppendText(str(clipText))
     if key==wx.WXK_F1:
-      print "F1 KEY HIT"
       self.parentWin.windowMover()
     if key==wx.WXK_TAB:
-      print "TAB"
       self.entry.AppendText(self.completionPanel.GetValue())
       self.completionPanel.SetValue("")
       self.entry.SetInsertionPointEnd()      
@@ -134,7 +146,9 @@ class CmdLine(wx.Panel):
         self.entry.SetValue(self.history[self.historyPos])
       self.entry.SetInsertionPointEnd()
     else:
-      evt.Skip()  # This means that I did not handle the event, find another handler
+      if pss: evt.Skip()  # This means that I did not handle the event, find another handler
+      return False
+    return True
     #print key
 
   def textEntryHandler(self,evt):
@@ -152,7 +166,7 @@ class CmdLine(wx.Panel):
     #self.refresh()  # I need to move the windows around based on the changing content
 
   def refresh(self):
-    print "refresh"
+    # print "refresh"
     (x,py) = self.promptPanel.GetBestSizeTuple()
     entryX,entryY = self.entry.GetTextExtent(self.entry.GetValue())
     y = max(py,entryY)

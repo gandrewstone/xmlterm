@@ -4,6 +4,7 @@ import math
 import os
 import re
 import string
+import glob
 import pdb
 import urlparse
 import urllib
@@ -22,6 +23,9 @@ import wx.richtext
 #import wx.lib.fancytext
 import wx
 import wx.aui
+
+AliveColor = (220,255,180)  #? This process is still alive
+CursorChar = chr(219)
 
 
 import matplotlib
@@ -62,7 +66,8 @@ class XmlPanel(wx.Panel):
     self.Bind(wx.EVT_MOUSE_EVENTS, self.OnMouse) #here I am binding the event.
     self.Bind(wx.EVT_CHAR, self.onCharEvent) 
     self.grabbable = False
-    self.brush = None
+    self.brush = None  #? The current background brush
+    self.defaultBrush = None  #? The default one (when not selected)
     self.selected = False
     self.createdAt = traceback.extract_stack()[-3]
 
@@ -79,10 +84,13 @@ class XmlPanel(wx.Panel):
   def setSelected(self,state):
     if self.selected != state:
       if state:
+        self.defaultBrush = self.brush
         self.brush = wx.Brush(SelectedColor,wx.SOLID)
+        self.SetBackgroundColour(SelectedColor)
       else:
-        print "clear brush"
-        self.brush = None
+        self.brush = self.defaultBrush
+        if self.brush: self.SetBackgroundColour(self.brush.GetColour())
+        else: self.SetBackgroundColour(self.parent.GetBackgroundColour())
       self.selected = state
       self.Refresh()
       self.Update()
@@ -317,6 +325,7 @@ wildcard = "TXT files (*.txt)|*.txt|"    \
            "All files (*.*)|*.*"
 
 
+
 class ProcessPanel(XmlPanel):
   """Spawn a process, get its output and send it input"""
   def __init__(self, parent,elem,resolver):
@@ -324,18 +333,33 @@ class ProcessPanel(XmlPanel):
     self.parent=parent
     self.resolver = resolver
     self.resolver.parentWin=self
-    self.name = elem.attrib["exec"]
-    self.cmdLine = elem.attrib["exec"].split()      
+    self.name = unescape(elem.text)
+    self.cmdLine = []
+
+    cmds = re.split("([\|\>])",self.name)
+    for c in self.name.split():
+      t = glob.glob(c)
+      if t:
+        self.cmdLine += t
+      else:
+        if c[0] == '"':   # Chop of a leading and trailing "
+          c = c[1:-1]
+        self.cmdLine.append(c)
+
+    # print self.cmdLine
+    
     self.timer = None
     self.doc = Document(self.resolver,self.onChange)
     self.process = None
-    self.refreshInterval=100
+    self.refreshInterval=150
     self.grabbable=True
     self.change = False
     self.keyInput=[]
     self.minSize=(100,20)
     self.size = (0,0)
-    self.brush = wx.Brush(wx.Colour(200,200,160),wx.SOLID)
+    self.brush = wx.Brush(wx.Colour(*AliveColor),wx.SOLID)
+    self.SetBackgroundColour(wx.Colour(*AliveColor))
+    self.timerCount=0
 
     self.Bind(wx.EVT_PAINT, self.OnPaint)
     # Bind to handle up/down arrow and enter
@@ -375,43 +399,51 @@ class ProcessPanel(XmlPanel):
     print "process panel got key: %d" % keycode
     if keycode<255:
       self.keyInput.append(keycode)
+    self.pushInput()
  
+  def pushInput(self):
+    """Attempt to push anything on the send queue into the pipe, if the pipe is ready"""
+    while len(self.keyInput):
+      (rlist,wlist,xlist) = select.select([],[self.toChild],[],0)
+      if not wlist: break  # receiver is not ready to accept any more characters
+      for pipe in wlist:
+        key = self.keyInput.pop(0)
+        os.write(pipe,chr(key))
+        
+
   def OnTimer(self, evt):
     """Periodically check to see if new data has been received from the child, or new data needs to be sent to the child"""
+    self.timerCount+=1
     # Now see if the process is complete.  Do this before the select to ensure we get it all.
     if self.process: retCode = self.process.poll()
     else: retCode = None     
-    
-    wlist = []
-    if len(self.keyInput):
-      wlist = [self.toChild]
-    #pdb.set_trace()
-    # rlist = [self.fromChild]  # No we are using xmldoc feed
-    rlist = []
-    if self.fromChild != self.errChild:
-      rlist.append(self.errChild)
-    (rlist,wlist,xlist) = select.select(rlist,wlist,[],0)
-    for pipe in wlist:
-      key = self.keyInput.pop(0)
-      #print "wrote %s" % chr(key)
-      os.write(pipe,chr(key))
-    for pipe in rlist:
-      if pipe == self.fromChild:
-        #try:
-        if 1:
-          data = os.read(self.fromChild,65536 )  # self.childOut.read()
-          if data:
-            # print "read ", data
-            # pdb.set_trace()
-            self.doc.appendFragment(data)
-            self.change = True
-        #except OSError, e:
 
-      elif pipe == self.errChild:
-        data = os.read(self.errChild,65536) # self.childErr.read()
-        # print "read ", data
-        self.doc.append('<text fore="#ff0000">' + data + "</text>")
-        self.change = True
+    self.doc.flush()    
+
+    self.pushInput()
+
+    if 1:
+        # rlist = [self.fromChild]  # No we are using xmldoc feed
+        rlist = []
+        if self.fromChild != self.errChild:
+          rlist.append(self.errChild)
+        (rlist,wlist,xlist) = select.select(rlist,[],[],0)
+        for pipe in rlist:
+          if pipe == self.fromChild:
+            pdb.set_trace()  # We are not using this code.  Instead we set up a separate thread by calling doc.startFeed()
+            if 1:
+              data = os.read(self.fromChild,65536 )  # self.childOut.read()
+              if data:
+                print "read ", data
+                #self.doc.appendFragment(data)
+                self.change = True
+            #except OSError, e:
+
+          elif pipe == self.errChild:
+            data = os.read(self.errChild,65536) # self.childErr.read()
+            print "errChild read ", data
+            self.doc.append('<text fore="#ff0000">' + data + "</text>")
+            self.change = True
     if self.change:
       self.change = False
       self.doc.layout()
@@ -433,14 +465,15 @@ class ProcessPanel(XmlPanel):
     if sz[0] != self.size[0] or sz[1] != self.size[1]:
       self.SetInitialSize(self.size)
       self.SetSize(self.size)
-      self.parent.relayout([self])
+      self.parent.GetParent().relayout([self])
 
   def execute(self):
     """Run the process"""
     #(self.childStdin, self.toChild) = os.pipe()
     if 1: # Do it with a pseudo-tty
       (self.fromChild,self.childStdout) = os.openpty() # os.pipe()
-      (self.errChild,self.childStderr) = ( self.fromChild,self.childStdout)    #os.openpty() # os.pipe()
+      # (self.errChild,self.childStderr) = ( os.dup(self.fromChild),os.dup(self.childStdout))    #os.openpty() # os.pipe()
+      (self.errChild,self.childStderr) = os.openpty()
       #(self.childStdin, self.toChild) = (self.childStdout, self.fromChild)
       self.toChild = os.dup(self.fromChild)
       self.childStdin = os.dup(self.childStdout)
@@ -465,6 +498,7 @@ class ProcessPanel(XmlPanel):
         fcntl.fcntl(self.errChild, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
     try:
+      print "executing ", self.cmdLine
       self.process = subprocess.Popen(args=self.cmdLine,stdin=self.childStdin,stdout=self.childStdout,stderr=self.childStderr,close_fds=True)
       # TODO, shouldn't we now be able to close the fds that we are not using (the child side FDs)?
       self.doc.startFeed(self.fromChild)
@@ -484,13 +518,14 @@ class ProcessPanel(XmlPanel):
     os.close(self.toChild)
     if self.childStdin != self.childStdout: os.close(self.childStdout)
     if self.childStderr != self.childStdout: os.close(self.childStderr)
-    
 
-  def xxxkeyPressed(self,evt):
-    key = evt.GetKeyCode()
-    print "sending key %d (%s) to child process" % (key,chr(key))
-    if key<255:
-      self.keyInput.append(key)
+    # Change the "live" background color to "dead" (parent's background color)
+    self.brush = self.defaultBrush = None # wx.Brush(None,wx.SOLID)
+    self.SetBackgroundColour(self.parent.GetBackgroundColour())
+    self.doc.flush()
+    self.render()
+    self.Refresh()
+    self.Update()
 
 
 
@@ -711,7 +746,6 @@ class WidgetPanel(XmlPanel):
       elem = ET.fromstring(text)
       self.update(elem)
 
-
   def render(self):
     """Turn the XML or ElementTree into graphical elements"""
     self.size = self.doc.position()
@@ -737,6 +771,19 @@ class TimePanel(XmlPanel):
         st = time.strftime("%I-%M-%S", t)
         self.clock.SetValue(st)
 
+def FancyTextChunked(parent,text,fore=None,back=None,size=None,chunkSize=4096):
+  """Returns a list of windows which contain the passed text broken into pieces of approximately chunkSize.
+     Chunking large text is needed because the windowing system does not perform well when rendering gigantic panels, most of which is off-screen
+  """
+  ret = []
+  while len(text) > chunkSize:
+    pos = text.find("\n",chunkSize)
+    ret.append(FancyText(parent,text[0:pos],fore,back,size))
+    text = text[pos+1:] # +1 because we want to skip the \n because the chunk will do so itself
+  if text:
+    ret.append(FancyText(parent,text,fore,back,size))
+  return ret
+
 
 class FancyText(XmlPanel):
   """This panel draws text in a specific color or style"""
@@ -744,13 +791,13 @@ class FancyText(XmlPanel):
     XmlPanel.__init__(self, parent) # ,style=wx.SIMPLE_BORDER)
     self.Bind(wx.EVT_PAINT, self.OnPaint)
     self.text = text
+    #if type(fore) == types.TupleType:
+    #  self.foregroundColor = "#%2x%2x%2x" % (fore[0],fore[1],fore[2])
     self.foregroundColor = fore
+    #if type(back) == types.TupleType:
+    #  self.backgroundColor = "#%2x%2x%2x" % (back[0],back[1],back[2])    
     self.backgroundColor = back
     self.size = size
-    #if back is None:
-    #  t = parent.GetBackgroundColour()
-    #  self.backgroundColor = [255,100,50] # [t[0],t[1],t[2]]
-    #  self.SetBackgroundColour(t)
     self.calcSize()
 
   def simpleString(self):
@@ -818,10 +865,16 @@ class FancyText(XmlPanel):
       print "text %s is selected" % self.getText()
       dc.SetTextBackground(SelectedColor)
       dc.SetBackground(wx.Brush(SelectedColor,wx.SOLID))
+    elif self.backgroundColor == wx.TRANSPARENT_BRUSH:
+      dc.SetBackground(wx.TRANSPARENT_BRUSH)
+      dc.SetTextBackground(None)
     elif self.backgroundColor:
       dc.SetTextBackground(wx.Colour(*self.backgroundColor))
       dc.SetBackground(wx.Brush(wx.Colour(*self.backgroundColor),wx.SOLID))
-      #dc.Clear()
+    else:  # None, use parent background color
+      self.SetBackgroundColour(self.parent.GetBackgroundColour())
+    dc.Clear()
+
     if self.size:
       font = dc.GetFont()
       font.SetPixelSize((self.size,self.size))
