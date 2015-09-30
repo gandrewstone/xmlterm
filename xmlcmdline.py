@@ -183,12 +183,10 @@ class CmdLine(wx.Panel):
     mySz = self.GetSize()
   
     if entrySz.x != pSize[0]-x:
-      print "set sz 1"
       self.entry.SetSizeWH(pSize[0]-x,-1)  # Set the size of the text entry to the full width
       self.entry.SetFocus()  # This causes the command line to get the keyboard events whenever the LiveDoc is selected (otherwise you need to click on it explicitly)
       self.completionPanel.move(x+entryX+self.ENTRY_EXTRA,0)  # But drop the completion panel on top of it
     if mySz.x != pSize[0] or mySz.y != y:
-      print "set sz 2"
       self.SetSizeWH(pSize[0],y)
     return y
    

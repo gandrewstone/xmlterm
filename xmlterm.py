@@ -195,7 +195,6 @@ def defaultHandler(elem,resolver,context):
       resolver.add(w) # ,0,wx.ALL | wx.EXPAND,0)
   del context.path[-1]   
 
-
 def getFunctionHelp(fn):
   #if fn.__name__ == "do_connect":
   #  pdb.set_trace()
@@ -239,6 +238,7 @@ def getDictCommandHelp(d, prefix="",single=None):
     ret += hlp
   print ret
   return ret  
+
 
 class XmlResolver:
   """This class turns an XML ElementTree representation into GUI widgets"""
@@ -407,7 +407,6 @@ class XmlResolver:
               # TODO: print the command's help and try to hint at the problem
               xmlterm.doc.append("<error>" + str(e) + "</error>")
               return
-
         if sp[0]=="cd" or sp[0]=="!cd":
           cwd = os.environ.get("PWD")
           cwd = os.path.abspath(os.path.join(sp[1]))
@@ -491,7 +490,6 @@ class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
   def __init__(self, parent,doc,termController):
     wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(600,900))
-
     self.ScrollBarWidth = 20 #? Configuration: how wide should the scroll bar be
     self.MouseWheelTicsPerScreen = 10.0 # How many mouse wheel motions to scroll by a full screen?
 

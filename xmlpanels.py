@@ -335,7 +335,6 @@ class ProcessPanel(XmlPanel):
     self.resolver.parentWin=self
     self.name = unescape(elem.text)
     self.cmdLine = []
-
     cmds = re.split("([\|\>])",self.name)
     for c in self.name.split():
       t = glob.glob(c)
@@ -783,7 +782,6 @@ def FancyTextChunked(parent,text,fore=None,back=None,size=None,chunkSize=4096):
   if text:
     ret.append(FancyText(parent,text,fore,back,size))
   return ret
-
 
 class FancyText(XmlPanel):
   """This panel draws text in a specific color or style"""
