@@ -184,14 +184,16 @@ def processHandler(elem, resolver,context):
 def defaultHandler(elem,resolver,context):
   """Handle normal text and any XML that does not have a handler"""
   if elem.text and elem.text.strip():
-    w = wx.StaticText(resolver.parentWin,-1,elem.text)
+    #w = wx.StaticText(resolver.parentWin,-1,elem.text)
+    w = FancyText(resolver.parentWin,elem.text)
     resolver.add(w) # ,0,wx.ALL | wx.EXPAND,0)
 
   context.path.append(elem.tag)
   for child in elem:
     resolver.resolve(child,context)
     if child.tail and child.tail.strip():
-      w = wx.StaticText(resolver.parentWin,-1,child.tail,style = wx.BORDER_NONE)
+      # w = wx.StaticText(resolver.parentWin,-1,child.tail,style = wx.BORDER_NONE)
+      w = FancyText(resolver.parentWin,child.tail)
       resolver.add(w) # ,0,wx.ALL | wx.EXPAND,0)
   del context.path[-1]   
 
