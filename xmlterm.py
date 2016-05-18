@@ -26,6 +26,8 @@ import pdb
 import urlparse
 import urllib
 import svg
+import json
+import ConfigParser as configparser
 from string import Template
 import subprocess
 import mainliner
@@ -40,6 +42,8 @@ import wx.gizmos as gizmos
 #import wx.lib.fancytext
 import wx
 import wx.aui
+
+DEFAULT_WINDOW_SIZE = (600,900)
 
 DropToDebugger = True
 
@@ -486,42 +490,61 @@ class MyFileDropTarget(wx.FileDropTarget):
         pdb.set_trace()
         print str(filenames)
 
-
-
+class LookAndFeel:
+  def __init__(self):
+    self.backCol = wx.Color(80,80,80,100)
+  
 class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
-  def __init__(self, parent,doc,termController):
-    wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER,size=(600,900))
-    self.ScrollBarWidth = 20 #? Configuration: how wide should the scroll bar be
+  def __init__(self, parent,doc,termController, config, LaF=None):
+    self.config = config
+    wx.Panel.__init__(self, parent, style = wx.TAB_TRAVERSAL|wx.SUNKEN_BORDER)
+    self.ScrollBarWidth = 0 # reported by the scrollbar
     self.MouseWheelTicsPerScreen = 10.0 # How many mouse wheel motions to scroll by a full screen?
-
+    if LaF: self.LaF = LaF  #? Look and Feel 
+    else:
+      self.LaF = LookAndFeel()
     self.frame = parent #? pointer to the primary GUI frame
     self.windowMoverMode = False #? Am I highlighting the child panels so they can be grabbed?
     self.resolver = termController  #?  The resolver converts xml to panels
     self.completion = termController #? Command line completion
     self.executeCmd = termController #? Execute a command entered in the prompt
+    
+    self.SetBackgroundColour(self.LaF.backCol)
 
-
-    tmp = self.GetClientSize()
+    tmp = parent.GetClientSize()
     #self.SetClientSize(tmp)  #? Window's display size (minus scrollbar and prompt)
     self.size = tmp
     
-    self.docPanel = wx.Panel(self, style = wx.NO_BORDER)
-
     self.cmdLine = CmdLine(self,lambda x,s=self: s.execute(x), self.completion)  #? Text entry window
+    self.cmdLine.SetBackgroundColour(self.LaF.backCol)
     #cmdLinePos = self.cmdLine.GetPosition()
 
     #tmp = (tmp[0] - self.ScrollBarWidth, cmdLinePos[1] - 2) # tmp[1] - cmdLineSize[1]*5)    
-    #self.docPanel.SetSize(tmp)
-    self.docPanel.SetPosition((0,0))
+    #self.docPanel.SetSize((tmp[0]-50-self.ScrollBarWidth,tmp[1]-10))
+    #self.docPanel.SetPosition((0,0))
 
     self.vscroll = wx.ScrollBar(self,style=wx.SB_VERTICAL)
+    size = self.vscroll.GetSize()
+    self.ScrollBarWidth = size[0]
+
+    assert(self.vscroll.SetBackgroundColour(self.LaF.backCol))
+    assert(self.vscroll.SetForegroundColour(wx.Colour(255,0,0,255)))
+    #self.vscroll.SetBrush(wx.Brush(wx.Colour(255,0,0),wx.SOLID))
+    #self.vscroll.SetBackground(wx.Brush(wx.Colour(255,0,0),wx.SOLID))
+    #self.vscroll.
+    
     self.vstart = (0,0) # self.GetViewStart()
     self.vsize = (0,0)  # Full document size
     self.vfrac = 1.0  # where am I in the document, fraction from 0 to 1 (scrollbar)
     self.vscroll.SetSize((self.ScrollBarWidth,self.size[1]))
     self.vscroll.SetPosition((self.size[0]-self.ScrollBarWidth,0))
     self.scrollBarGrabSize = self.size[1]
+
+    self.docPanel = wx.Panel(self, pos=(0,0),style = wx.NO_BORDER)
+    self.docPanel.SetBackgroundColour(self.LaF.backCol)
+
+    # debugging: self.docPanel.SetBackgroundColour(wx.Color(255,0,0,255))
 
     self.resolver.parentWin = self.docPanel
     self.doc = Document(self.resolver)
@@ -533,6 +556,7 @@ class XmlTerm(wx.Panel):
       
     # self.frame.handOff(FancyText(self.frame,"This is a test"))
 
+    self.Bind(wx.EVT_MOVE, self.OnReposition) 
     self.Bind(wx.EVT_SIZE, self.OnSize) 
     self.Bind(wx.EVT_MOUSE_EVENTS, self.OnMouse) 
     self.vscroll.Bind(wx.EVT_SCROLL, self.OnScroll)
@@ -727,16 +751,20 @@ class XmlTerm(wx.Panel):
 #    self.calcDocSize() 
 #    self.vstart = (0, max(0,self.vsize[1]-self.GetClientSize()[1]-self.cmdLine.GetSize()[1]))  # Go back to the bottom
 
+  def OnReposition(self,event):
+      """Change the position of this window"""
+      pos = event.GetPosition()
+      self.config.set("LookAndFeel","position",json.dumps(pos.Get()))
+
   def OnSize(self,event):
       """Change the size of this window"""
       newsize = self.GetClientSize()
       if self.size != newsize:
         self.size = newsize
-        self.vscroll.SetSize((20,self.size[1]))
-        self.vscroll.SetPosition((self.size[0]-20,0))
+        self.vscroll.SetSize((self.ScrollBarWidth,self.size[1]))
+        self.vscroll.SetPosition((self.size[0]-self.ScrollBarWidth,0))
         self.render()
-
-        # print self.GetViewStart()
+        self.config.set("LookAndFeel","size",json.dumps(self.size.Get()))
        
    
   def render(self):
@@ -764,7 +792,7 @@ class XmlTerm(wx.Panel):
     self.cmdLine.MoveXY(0,self.size[1]-cmdHeight)
     self.cmdLine.Update()
 
-    self.docPanel.SetSize((size[0],self.size[1]-cmdHeight))
+    self.docPanel.SetSize((size[0]-self.ScrollBarWidth-1,self.size[1]-cmdHeight))
 
 
 class MyMiniFrame(wx.MiniFrame):
@@ -809,13 +837,19 @@ class MyMiniFrame(wx.MiniFrame):
 
 class MyFrame(wx.Frame):
     """ The primary frame"""
-    def __init__(self, parent, title,panelFactory,size=(800,600)):
-        wx.Frame.__init__(self, parent, -1, title, pos=(150, 150), size=size)
+    def __init__(self, parent, title, panelFactory,size=DEFAULT_WINDOW_SIZE,position=None):
+        wx.Frame.__init__(self, parent, -1, title, pos=position, size=size)
         self.panel = panelFactory(self)
         sizer = wx.BoxSizer()
         sizer.Add(self.panel, 1, wx.EXPAND)
         self.SetSizer(sizer)
         self.Bind(mainliner.EVT_EXECUTE,self.execute)
+        self.Bind(wx.EVT_MOVE, self.OnReposition) 
+        self.SetTransparent(128) 
+
+    def OnReposition(self,event):
+      """Change the position of this window"""
+      self.panel.OnReposition(event)  # I call into the child so it can write the config file.  This saves passing the config to the frame
 
     def execute(self,evt):
       # pdb.set_trace()
@@ -837,12 +871,13 @@ class MyFrame(wx.Frame):
 
 
 class App(wx.App):
-    def __init__(self, panelFactory, redirect,size=None):
+    def __init__(self, panelFactory, redirect,size=None,position=None):
       self.panelFactory = panelFactory
       self.size = size
+      self.position = position
       wx.App.__init__(self, redirect=redirect)
     def OnInit(self):
-      self.frame = MyFrame(None, "XML Shell",self.panelFactory,size=self.size)
+      self.frame = MyFrame(None, "XML Shell",self.panelFactory,size=self.size,position=self.position)
       self.SetTopWindow(self.frame)
       self.frame.Show(True)
       return True
@@ -948,7 +983,11 @@ def main(doc=None):
 
   if not doc:
     doc=[]
-  app = App(lambda parent,doc=doc,resolver=resolver: XmlTerm(parent,doc,resolver),redirect=False)
+
+  config = ConfigParser.SafeConfigParser()
+  config.read(".xmlterm.cfg")  
+
+  app = App(lambda parent,doc=doc,resolver=resolver: XmlTerm(parent,doc,resolver,config),redirect=False)
   app.MainLoop()
 
 

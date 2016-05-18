@@ -47,9 +47,11 @@ class CmdLine(wx.Panel):
     self.executeHandler = execute
     self.completionHandler = completion # Set this to install a command completion handler: def handler(editLine): return "completion"
 
-    self.promptPanel = FancyText(self,self.completionHandler.prompt(),fore=(0,0,255))
 
     self.entry = wx.TextCtrl(self, -1, "",style = wx.NO_BORDER) # | wx.TE_MULTILINE)  # Only 1 line but text styles are only supported in the multiline widget in wxGTK
+
+    self.promptPanel = FancyText(self,self.completionHandler.prompt(),fore=(0,0,255),font=self.entry.GetFont())
+
     self.entry.SetBackgroundColour(parent.GetBackgroundColour())
     self.completionPanel= FancyText(self,"",fore=(130,130,130))
 
