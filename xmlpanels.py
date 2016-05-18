@@ -1,6 +1,7 @@
 from ast import literal_eval
 import sys, time, types, traceback
 import math
+import json
 import os
 import re
 import string
@@ -187,7 +188,7 @@ class BarPanel(XmlPanel):
     
 
   def render(self):
-    self.plot.SetBackgroundColour(None)  # None is clear
+    self.plot.SetBackgroundColour(self.parent.GetBackgroundColour()) # None)  # None is clear
     self.plot.SetFont(wx.Font(10, wx.FONTFAMILY_SWISS, wx.FONTSTYLE_NORMAL, wx.FONTWEIGHT_NORMAL))
     self.plot.SetFontSizeAxis(10)
     self.plot.SetFontSizeLegend(7)
@@ -293,14 +294,18 @@ class PlotPanel(XmlPanel):
     #self.axes.plot(t, s)
     for child in self.elem:
       if child.tag == "series":
-        data = [float(x.strip()) for x in child.text.split(",")]
+        try:
+          data = json.loads(child.text)
+        except:
+          data = [float(x.strip()) for x in child.text.split(",")]
         label = child.attrib.get("label",None)
         self.axes.plot(data,label=label)
         
     #ret1, = self.axes.plot([1,2,3,4,5,6,7,8],label="test_label")
     #ret2, = self.axes.plot([8,7,6,5,4,3,2,1],label="test2_label")
     if not small:
-      self.axes.legend()
+      pos = (1.2, 1.05)
+      self.axes.legend(bbox_to_anchor=pos, bbox_transform=self.axes.transAxes)
 
     # Turn off axis lines and ticks of the big subplot
     #self.axes.spines['top'].set_color('none')
@@ -785,10 +790,11 @@ def FancyTextChunked(parent,text,fore=None,back=None,size=None,chunkSize=4096):
 
 class FancyText(XmlPanel):
   """This panel draws text in a specific color or style"""
-  def __init__(self, parent,text,fore=None,back=None,size=None):
+  def __init__(self, parent,text,fore=None,back=None,size=None,font=None):
     XmlPanel.__init__(self, parent) # ,style=wx.SIMPLE_BORDER)
     self.Bind(wx.EVT_PAINT, self.OnPaint)
     self.text = text
+    self.font = font
     #if type(fore) == types.TupleType:
     #  self.foregroundColor = "#%2x%2x%2x" % (fore[0],fore[1],fore[2])
     self.foregroundColor = fore
@@ -796,6 +802,13 @@ class FancyText(XmlPanel):
     #  self.backgroundColor = "#%2x%2x%2x" % (back[0],back[1],back[2])    
     self.backgroundColor = back
     self.size = size
+
+    if self.font:
+      font = self.font
+    else:
+      font = self.parent.GetFont()
+    self.SetFont(font)
+
     self.calcSize()
 
   def simpleString(self):
@@ -861,6 +874,7 @@ class FancyText(XmlPanel):
       dc.SetTextForeground(wx.Colour(*self.foregroundColor))
     if self.selected:
       print "text %s is selected" % self.getText()
+      bkcol = SelectedColor
       dc.SetTextBackground(SelectedColor)
       dc.SetBackground(wx.Brush(SelectedColor,wx.SOLID))
     elif self.backgroundColor == wx.TRANSPARENT_BRUSH:
@@ -870,8 +884,18 @@ class FancyText(XmlPanel):
       dc.SetTextBackground(wx.Colour(*self.backgroundColor))
       dc.SetBackground(wx.Brush(wx.Colour(*self.backgroundColor),wx.SOLID))
     else:  # None, use parent background color
-      self.SetBackgroundColour(self.parent.GetBackgroundColour())
-    dc.Clear()
+      col = self.parent.GetBackgroundColour()
+      # dc.SetBackgroundMode(wx.TRANSPARENT) # wx.SOLID) # wx.TRANSPARENT
+      dc.SetTextBackground(col)
+      dc.SetBackground(wx.Brush(wx.Colour(*col),wx.SOLID))
+    if self.font:
+      font = self.font
+    else:
+      font = self.parent.GetFont()
+
+    self.SetFont(font)
+    dc.SetFont(font)
+    dc.Clear()  # clears to dc.SetBackground() color
 
     if self.size:
       font = dc.GetFont()
