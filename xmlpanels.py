@@ -782,8 +782,11 @@ def FancyTextChunked(parent,text,fore=None,back=None,size=None,chunkSize=4096):
   ret = []
   while len(text) > chunkSize:
     pos = text.find("\n",chunkSize)
-    ret.append(FancyText(parent,text[0:pos],fore,back,size))
-    text = text[pos+1:] # +1 because we want to skip the \n because the chunk will do so itself
+    if pos == -1:  # No reasonable break so do not chunk
+      break
+    else:
+      ret.append(FancyText(parent,text[0:pos],fore,back,size))
+      text = text[pos+1:] # +1 because we want to skip the \n because the chunk will do so itself
   if text:
     ret.append(FancyText(parent,text,fore,back,size))
   return ret
