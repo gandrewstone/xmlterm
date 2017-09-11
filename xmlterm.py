@@ -492,7 +492,7 @@ class MyFileDropTarget(wx.FileDropTarget):
 
 class LookAndFeel:
   def __init__(self):
-    self.backCol = wx.Color(80,80,80,100)
+    self.backCol = wx.Colour(80,80,80,100)
   
 class XmlTerm(wx.Panel):
   """This is the main XML terminal panel.  Right now it behaves both as a terminal and a shell which is both awkward and powerful"""
@@ -751,10 +751,18 @@ class XmlTerm(wx.Panel):
 #    self.calcDocSize() 
 #    self.vstart = (0, max(0,self.vsize[1]-self.GetClientSize()[1]-self.cmdLine.GetSize()[1]))  # Go back to the bottom
 
+  def configSet(self, section, key, value):
+      try:
+          self.config.set(section,key,value)
+      except configparser.NoSectionError:
+          self.config.add_section(section)
+          self.config.set(section,key,value)
+
+
   def OnReposition(self,event):
       """Change the position of this window"""
       pos = event.GetPosition()
-      self.config.set("LookAndFeel","position",json.dumps(pos.Get()))
+      self.configSet("LookAndFeel","position",json.dumps(pos.Get()))
 
   def OnSize(self,event):
       """Change the size of this window"""
@@ -764,9 +772,8 @@ class XmlTerm(wx.Panel):
         self.vscroll.SetSize((self.ScrollBarWidth,self.size[1]))
         self.vscroll.SetPosition((self.size[0]-self.ScrollBarWidth,0))
         self.render()
-        self.config.set("LookAndFeel","size",json.dumps(self.size.Get()))
-       
-   
+        self.configSet("LookAndFeel","size",json.dumps(self.size.Get()))
+
   def render(self):
     """Place the child panels appropriately in this panel"""
     # print "render"
